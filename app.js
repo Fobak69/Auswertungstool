@@ -1213,7 +1213,25 @@
       const stamm = lookupStammdaten(m.ressourcennummer);
       const pDate = parseAnyDate(m.dateIso);
       const kw = pDate ? getISOWeekDetails(pDate) : null;
-      const isArbeitszeit = (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
+      const isAbzug = (m.type === 'Arbeitszeit-Abzug' || String(m.type).toLowerCase().includes('abzug') || String(m.type).toLowerCase().includes('kürzung'));
+      const isArbeitszeitZuschlag = !isAbzug && (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
+
+      let displayHours = Number(m.stunden) || 0;
+      let auftragsnummer = '–';
+      let leistung = `Abwesenheit: ${m.type}`;
+      let beschreibung = m.note ? `${m.note} (Manuell erfasst)` : 'Manuelle Erfassung';
+
+      if (isAbzug) {
+        displayHours = -Math.abs(displayHours);
+        auftragsnummer = 'Korrektur (Abzug)';
+        leistung = 'Arbeitszeit-Korrektur (Abzug)';
+        beschreibung = m.note ? `${m.note} (Zuviel gebuchte Stunden abgezogen)` : 'Zuviel erfasste Arbeitszeit abgezogen';
+      } else if (isArbeitszeitZuschlag) {
+        displayHours = Math.abs(displayHours);
+        auftragsnummer = 'Nachbuchung';
+        leistung = 'Arbeitszeit (Nachbuchung)';
+        beschreibung = m.note ? `${m.note} (Manuell erfasst)` : 'Nachgetragene Arbeitszeit';
+      }
 
       combined.push({
         id: m.id,
@@ -1224,7 +1242,7 @@
         weekday: pDate ? getWeekdayShort(pDate) : '',
         kwInfo: kw,
 
-        auftragsnummer: isArbeitszeit ? 'Nachbuchung' : '–',
+        auftragsnummer: auftragsnummer,
         ort: '–',
         ressourcennummer: m.ressourcennummer,
 
@@ -1233,13 +1251,14 @@
         isKnown: true,
         isMitarbeiter: true,
 
-        stunden: m.stunden,
-        leistung: isArbeitszeit ? 'Arbeitszeit (Nachbuchung)' : `Abwesenheit: ${m.type}`,
-        beschreibung: m.note ? `${m.note} (Manuell erfasst)` : (isArbeitszeit ? 'Nachgetragene Arbeitszeit' : 'Manuelle Erfassung'),
+        stunden: displayHours,
+        leistung: leistung,
+        beschreibung: beschreibung,
         preis: 0,
-        isManualAbsence: !isArbeitszeit,
-        isManualWork: isArbeitszeit,
-        absenceType: isArbeitszeit ? '' : m.type
+        isManualAbsence: !isAbzug && !isArbeitszeitZuschlag,
+        isManualWork: isArbeitszeitZuschlag,
+        isManualCorrection: isAbzug,
+        absenceType: m.type
       });
     }
 
@@ -1350,7 +1369,7 @@
     if (sorted.length === 0) {
       tbody.innerHTML = `
         <tr class="empty-row">
-          <td colspan="9">
+          <td colspan="10">
             <div class="empty-state">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <circle cx="12" cy="12" r="10"></circle>
@@ -1367,10 +1386,36 @@
 
     tbody.innerHTML = sorted.map(item => {
       let leistungBadge = escapeHtml(item.leistung);
-      if (item.isManualAbsence) {
+      if (item.isManualCorrection) {
+        leistungBadge = `<span class="badge-absence badge-korrektur">Korrektur (Abzug)</span> ${escapeHtml(item.leistung)}`;
+      } else if (item.isManualAbsence) {
         leistungBadge = `<span class="badge-absence ${getAbsenceBadgeClass(item.absenceType)}">${escapeHtml(item.absenceType)}</span> ${escapeHtml(item.leistung)}`;
       } else if (item.isManualWork) {
         leistungBadge = `<span class="badge-absence badge-arbeit">Nachbuchung</span> ${escapeHtml(item.leistung)}`;
+      }
+
+      let hoursDisplay = '';
+      if (item.stunden < 0) {
+        hoursDisplay = `<span style="color: #dc2626; font-weight: 700;">-${formatNumber(Math.abs(item.stunden), 2)}</span>`;
+      } else {
+        hoursDisplay = `<span style="color: var(--primary); font-weight: 700;">${formatNumber(item.stunden, 2)}</span>`;
+      }
+
+      let actionHtml = '';
+      if (item.isManualAbsence || item.isManualWork || item.isManualCorrection) {
+        actionHtml = `
+          <div class="btn-action-group">
+            <button type="button" class="btn-action-sm btn-action-edit" onclick="window.openManualEntryModal('${escapeHtml(item.ressourcennummer)}', '${item.dateIso}')" title="Manuelle Buchung bearbeiten">✏️</button>
+            <button type="button" class="btn-action-sm btn-action-delete" onclick="window.deleteManualEntryDirect('${item.id}')" title="Manuelle Buchung löschen">🗑️</button>
+          </div>
+        `;
+      } else {
+        actionHtml = `
+          <div class="btn-action-group">
+            <button type="button" class="btn-action-sm btn-action-edit" onclick="window.editBewegungsdatenRow('${item.id}')" title="Arbeitszeit für diesen Eintrag anpassen">✏️ Ändern</button>
+            <button type="button" class="btn-action-sm btn-action-delete" onclick="window.deleteBewegungsdatenRow('${item.id}')" title="Fehleintrag aus Liste löschen">🗑️</button>
+          </div>
+        `;
       }
 
       return `
@@ -1401,12 +1446,13 @@
               ${escapeHtml(item.kategorie)}
             </span>
           </td>
-          <td class="text-right font-bold" style="color: var(--primary);">
-            ${formatNumber(item.stunden, 2)}
+          <td class="text-right">
+            ${hoursDisplay}
           </td>
           <td>${leistungBadge}</td>
           <td style="max-width: 250px; font-size: 0.82rem; color: #475569;">${escapeHtml(item.beschreibung)}</td>
           <td class="text-right">${formatCurrency(item.preis)}</td>
+          <td class="text-center">${actionHtml}</td>
         </tr>
       `;
     }).join('');
@@ -1488,6 +1534,7 @@
           workHoursByDay: [0, 0, 0, 0, 0, 0, 0],
           absenceByDay: [null, null, null, null, null, null, null],
           manualWorkByDay: [null, null, null, null, null, null, null],
+          manualCorrectionByDay: [null, null, null, null, null, null, null],
           absenceList: [],
           detailsByDay: [[], [], [], [], [], [], []],
           datesSet: new Set(),
@@ -1528,7 +1575,7 @@
       }
     }
 
-    // C. Manuelle Einträge (Arbeitszeit-Nachbuchung oder Abwesenheiten wie Krank/Urlaub/Überstunden)
+    // C. Manuelle Einträge (Arbeitszeit-Nachbuchung, Korrektur-Abzug oder Abwesenheiten wie Krank/Urlaub/Überstunden)
     const isRealStamm = state.stammdaten.length > 0 && !state.stammdatenFilename.toLowerCase().includes('demo') && !state.stammdatenFilename.toLowerCase().includes('muster');
     for (const m of state.manualEntries) {
       if (isRealStamm && ((m.id && m.id.startsWith('demo_')) || (m.ressourcennummer && m.ressourcennummer.startsWith('M00')))) {
@@ -1538,9 +1585,25 @@
       if (dayIdx !== -1) {
         // Mitarbeiter ermitteln – fließt strikt in dieselbe Zeile!
         const emp = getOrCreateEmp(m.ressourcennummer);
-        const isArbeitszeit = (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
+        const isAbzug = (m.type === 'Arbeitszeit-Abzug' || String(m.type).toLowerCase().includes('abzug') || String(m.type).toLowerCase().includes('kürzung'));
+        const isArbeitszeitZuschlag = !isAbzug && (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
 
-        if (isArbeitszeit) {
+        if (isAbzug) {
+          // Gilt als ARBEITSZEIT-KORREKTUR (Abzug von zuviel erfassten Stunden)
+          const deduction = Math.abs(Number(m.stunden) || 0);
+          emp.workHours = Math.max(0, emp.workHours - deduction);
+          emp.totalHours = Math.max(0, emp.totalHours - deduction);
+          emp.workHoursByDay[dayIdx] = Math.max(0, emp.workHoursByDay[dayIdx] - deduction);
+          emp.manualCorrectionByDay[dayIdx] = m;
+          emp.datesSet.add(m.dateIso);
+
+          emp.detailsByDay[dayIdx].push({
+            auftragsnummer: 'Korrektur (Abzug)',
+            ort: '',
+            stunden: -deduction,
+            leistung: 'Arbeitszeit-Abzug' + (m.note ? `: ${m.note}` : '')
+          });
+        } else if (isArbeitszeitZuschlag) {
           // Gilt als REGULÄRE ARBEITSZEIT (Nachbuchung fehlender Stunden)
           emp.workHours += m.stunden;
           emp.totalHours += m.stunden;
@@ -1714,6 +1777,7 @@
           const workH = emp.workHoursByDay[d];
           const abs = emp.absenceByDay[d];
           const manWork = emp.manualWorkByDay ? emp.manualWorkByDay[d] : null;
+          const manCorrection = emp.manualCorrectionByDay ? emp.manualCorrectionByDay[d] : null;
           const dayOvertime = emp.overtimeByDay ? emp.overtimeByDay[d] : 0;
           const missingH = emp.missingByDay ? emp.missingByDay[d] : 0;
           const targetH = getDailyTargetHours(d);
@@ -1728,6 +1792,10 @@
             tooltipParts.push(emp.detailsByDay[d].map(t => 
               `${t.auftragsnummer}${t.ort ? ` (${t.ort})` : ''}: ${formatNumber(t.stunden, 1)}h [${t.leistung}]`
             ).join(' | '));
+          }
+
+          if (manCorrection) {
+            tooltipParts.push(`Korrektur/Abzug: -${formatNumber(manCorrection.stunden, 1)} Std. (${manCorrection.note || 'Zuviel erfasste Arbeitszeit abgezogen'}) -> Netto-Arbeitszeit: ${formatNumber(workH, 2)} Std.`);
           }
 
           if (dayOvertime > 0) {
@@ -1746,12 +1814,22 @@
             tooltipParts.push(`⚠️ Offene Fehlzeit: ${formatNumber(missingH, 1)} Std. zur Sollzeit (${targetH}h) fehlen! Klicken zum Klären.`);
           }
 
+          let correctionBadge = '';
+          if (manCorrection) {
+            correctionBadge = `<span class="badge-absence badge-korrektur" title="Arbeitszeit um ${formatNumber(manCorrection.stunden, 1)}h gekürzt: ${escapeHtml(manCorrection.note || 'Korrektur')}">-${formatNumber(manCorrection.stunden, 1).replace(',0', '')}h Korr</span>`;
+          }
+
+          const notesArr = [
+            manWork && manWork.note ? `AZ: ${manWork.note}` : '',
+            manCorrection ? `Korr: -${formatNumber(manCorrection.stunden, 1)}h${manCorrection.note ? ` (${manCorrection.note})` : ''}` : '',
+            abs && abs.note ? `${abs.type}: ${abs.note}` : ''
+          ].filter(Boolean);
+          const noteText = notesArr.join(' | ');
+          const noteHtml = noteText ? `<div class="cell-note-text" title="${escapeHtml(noteText)}">${escapeHtml(noteText)}</div>` : '';
+
           // Aufbau der Zelle: Alles kompakt in EINER Zelle des Tages!
           if (workH > 0 && abs) {
             // Fall 1: Arbeitszeit + Abwesenheitszusatz (z. B. 6h Arbeit + 2h Überstundenabbau)
-            const noteText = [manWork && manWork.note ? `AZ: ${manWork.note}` : '', abs.note ? `${abs.type}: ${abs.note}` : ''].filter(Boolean).join(' | ');
-            const noteHtml = noteText ? `<div class="cell-note-text" title="${escapeHtml(noteText)}">${escapeHtml(noteText)}</div>` : '';
-
             let overtimeBadge = '';
             if (dayOvertime > 0) {
               overtimeBadge = `<span class="badge-absence badge-overtime" title="Davon ${formatNumber(dayOvertime, 1)}h Überstunden">+${formatNumber(dayOvertime, 1).replace(',0', '')}h ÜSt</span>`;
@@ -1766,6 +1844,7 @@
               <div class="matrix-cell-wrap ${missingH > 0 ? 'cell-missing-highlight' : ''}">
                 <div class="cell-hours-row">
                   <span class="work-num">${formatNumber(workH, 2)}</span>
+                  ${correctionBadge}
                   ${overtimeBadge}
                   <span class="badge-absence ${getAbsenceBadgeClass(abs.type)}">
                     ${formatAbsenceShort(abs.type, abs.stunden)}
@@ -1777,7 +1856,6 @@
             `;
           } else if (abs) {
             // Fall 2: Nur Abwesenheit (z. B. ganzer Tag Krank oder Urlaub, Arbeitszeit = 0)
-            const noteHtml = abs.note ? `<div class="cell-note-text" title="${escapeHtml(abs.note)}">${escapeHtml(abs.note)}</div>` : '';
             let missingBadge = '';
             if (missingH > 0) {
               missingBadge = `<span class="badge-absence badge-missing" title="Noch ${formatNumber(missingH, 1)}h offen zur Sollzeit">⚠️ -${formatNumber(missingH, 1).replace(',0', '')}h</span>`;
@@ -1786,6 +1864,7 @@
             cellInner = `
               <div class="matrix-cell-wrap ${missingH > 0 ? 'cell-missing-highlight' : ''}">
                 <div class="cell-hours-row">
+                  ${correctionBadge}
                   <span class="badge-absence ${getAbsenceBadgeClass(abs.type)}">
                     ${escapeHtml(abs.type)} ${formatNumber(abs.stunden, 1)}h
                   </span>
@@ -1796,12 +1875,11 @@
             `;
           } else if (workH > 0 && dayOvertime > 0) {
             // Fall 3: Arbeitszeit MIT Überstunden (>8h Mo-Do, >7h Fr oder Sa/So)
-            const noteHtml = (manWork && manWork.note) ? `<div class="cell-note-text" title="${escapeHtml(manWork.note)}">${escapeHtml(manWork.note)}</div>` : '';
-
             cellInner = `
               <div class="matrix-cell-wrap">
                 <div class="cell-hours-row">
                   <span class="work-num">${formatNumber(workH, 2)}</span>
+                  ${correctionBadge}
                   <span class="badge-absence badge-overtime" title="Davon ${formatNumber(dayOvertime, 1)} Std. Überstunden (über Soll ${targetH}h)">
                     +${formatNumber(dayOvertime, 1).replace(',0', '')}h ÜSt
                   </span>
@@ -1811,12 +1889,11 @@
             `;
           } else if (workH > 0 && missingH > 0) {
             // Fall 4: Arbeitszeit, aber WENIGER als Sollzeit und noch keine Abwesenheit erfasst!
-            const noteHtml = (manWork && manWork.note) ? `<div class="cell-note-text" title="${escapeHtml(manWork.note)}">${escapeHtml(manWork.note)}</div>` : '';
-
             cellInner = `
               <div class="matrix-cell-wrap cell-missing-highlight">
                 <div class="cell-hours-row">
                   <span class="work-num" style="color: #c2410c;">${formatNumber(workH, 2)}</span>
+                  ${correctionBadge}
                   <span class="badge-absence badge-missing" title="Sollzeit (${targetH}h) nicht erreicht: ${formatNumber(missingH, 1)}h fehlen! Klicken zum Klären">
                     ⚠️ -${formatNumber(missingH, 1).replace(',0', '')}h
                   </span>
@@ -1827,12 +1904,11 @@
             `;
           } else if (workH > 0 && manWork) {
             // Fall 5: Nachgebuchte Arbeitszeit ohne Überstunden/Minderarbeit
-            const noteHtml = manWork.note ? `<div class="cell-note-text" title="${escapeHtml(manWork.note)}">${escapeHtml(manWork.note)}</div>` : '';
-
             cellInner = `
               <div class="matrix-cell-wrap">
                 <div class="cell-hours-row">
                   <span class="work-num">${formatNumber(workH, 2)}</span>
+                  ${correctionBadge}
                   <span class="badge-absence badge-arbeit" title="Arbeitszeit manuell nachgebucht">
                     +${formatNumber(manWork.stunden, 1).replace(',0', '')}h AZ
                   </span>
@@ -1841,16 +1917,29 @@
               </div>
             `;
           } else if (workH > 0) {
-            // Fall 6: Reine reguläre Arbeitsstunden aus Bewegungsdaten (Soll genau erfüllt)
+            // Fall 6: Reguläre Arbeitsstunden (oder nach Korrektur)
             cellInner = `
               <div class="matrix-cell-wrap">
                 <div class="cell-hours-row">
                   <span class="day-cell has-hours">${formatNumber(workH, 2)}</span>
+                  ${correctionBadge}
                 </div>
+                ${noteHtml}
+              </div>
+            `;
+          } else if (manCorrection) {
+            // Fall 7: Arbeitszeit durch Korrektur komplett auf 0 gesetzt
+            cellInner = `
+              <div class="matrix-cell-wrap">
+                <div class="cell-hours-row">
+                  <span class="work-num" style="color: #64748b;">0,00</span>
+                  ${correctionBadge}
+                </div>
+                ${noteHtml}
               </div>
             `;
           } else if (missingH > 0) {
-            // Fall 7: 0 Stunden erfasst an einem Werktag für aktiven Mitarbeiter!
+            // Fall 8: 0 Stunden erfasst an einem Werktag für aktiven Mitarbeiter!
             cellInner = `
               <div class="matrix-cell-wrap cell-missing-highlight">
                 <span class="badge-absence badge-missing" title="0 Std. erfasst (Soll: ${targetH}h). Klicken zum Klären!">
@@ -1859,7 +1948,7 @@
               </div>
             `;
           } else {
-            // Fall 8: Keine Stunden (Wochenende oder inaktiver Mitarbeiter)
+            // Fall 9: Keine Stunden (Wochenende oder inaktiver Mitarbeiter)
             cellInner = `<span class="zero-dash">–</span>`;
           }
 
@@ -2219,6 +2308,23 @@
     document.getElementById('manualDateInput').addEventListener('change', checkAndPrepopulateExistingEntry);
     document.getElementById('manualDateInput').addEventListener('input', checkAndPrepopulateExistingEntry);
 
+    const selType = document.getElementById('manualTypeSelect');
+    if (selType) {
+      selType.addEventListener('change', () => {
+        if (window.updateManualHoursCalcFeedback) window.updateManualHoursCalcFeedback();
+      });
+    }
+
+    const inpHours = document.getElementById('manualHoursInput');
+    if (inpHours) {
+      inpHours.addEventListener('input', () => {
+        if (window.updateManualHoursCalcFeedback) window.updateManualHoursCalcFeedback();
+      });
+      inpHours.addEventListener('change', () => {
+        if (window.updateManualHoursCalcFeedback) window.updateManualHoursCalcFeedback();
+      });
+    }
+
     window.openManualEntryModal = openManualEntryModal;
     window.deleteManualEntryDirect = (id) => {
       deleteManualEntryById(id);
@@ -2250,28 +2356,36 @@
   }
 
   function getRecordedHoursForEmployeeAndDate(ressourcennummer, dateIso) {
-    if (!ressourcennummer || !dateIso) return { workH: 0, absH: 0 };
+    if (!ressourcennummer || !dateIso) return { rawWorkH: 0, manualWorkH: 0, correctionH: 0, netWorkH: 0, workH: 0, absH: 0 };
     const rKey = normalizeResourceKey(ressourcennummer);
-    let workH = 0;
+    let rawWorkH = 0;
+    let manualWorkH = 0;
+    let correctionH = 0;
     let absH = 0;
 
     for (const b of state.bewegungsdaten) {
       if (normalizeResourceKey(b.ressourcennummer) === rKey && b.dateIso === dateIso) {
-        workH += (b.stunden || 0);
+        rawWorkH += (b.stunden || 0);
       }
     }
 
     for (const m of state.manualEntries) {
       if (normalizeResourceKey(m.ressourcennummer) === rKey && m.dateIso === dateIso) {
-        if (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit')) {
-          workH += (m.stunden || 0);
+        const isAbzug = (m.type === 'Arbeitszeit-Abzug' || String(m.type).toLowerCase().includes('abzug') || String(m.type).toLowerCase().includes('kürzung'));
+        const isArbeitszeitZuschlag = !isAbzug && (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
+
+        if (isAbzug) {
+          correctionH += Math.abs(Number(m.stunden) || 0);
+        } else if (isArbeitszeitZuschlag) {
+          manualWorkH += (Number(m.stunden) || 0);
         } else {
-          absH += (m.stunden || 0);
+          absH += (Number(m.stunden) || 0);
         }
       }
     }
 
-    return { workH, absH };
+    const netWorkH = Math.max(0, rawWorkH + manualWorkH - correctionH);
+    return { rawWorkH, manualWorkH, correctionH, netWorkH, workH: netWorkH, absH };
   }
 
   function renderKlaerungsBox(activeEmployees, selKw) {
@@ -2374,10 +2488,7 @@
     sel.innerHTML = html;
   }
 
-  function openManualEntryModal(ressourcennummer = '', dateIso = '', forcedMissingHours = null) {
-    populateManualModalEmployees();
-
-    const modal = document.getElementById('modalManualEntry');
+  function updateManualModalState(forcedMissingHours = null) {
     const selEmp = document.getElementById('manualSelectMitarbeiter');
     const dateInput = document.getElementById('manualDateInput');
     const typeSelect = document.getElementById('manualTypeSelect');
@@ -2388,26 +2499,12 @@
     const existingInfo = document.getElementById('manualExistingInfo');
     const hintFriday = document.getElementById('hintFridayHours');
     const contextBanner = document.getElementById('manualContextBanner');
-
-    if (ressourcennummer) {
-      const normTarget = normalizeResourceKey(ressourcennummer);
-      let found = false;
-      for (const opt of selEmp.options) {
-        if (normalizeResourceKey(opt.value) === normTarget) {
-          selEmp.value = opt.value;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        selEmp.value = ressourcennummer;
-      }
-    }
-    if (dateIso) {
-      dateInput.value = dateIso;
-    } else if (!dateInput.value) {
-      dateInput.value = formatDateIso(new Date());
-    }
+    const recordedBox = document.getElementById('manualRecordedBox');
+    const lblRecordedDate = document.getElementById('lblRecordedDate');
+    const lblCurrentWorkHours = document.getElementById('lblCurrentWorkHours');
+    const lblCurrentTargetDiff = document.getElementById('lblCurrentTargetDiff');
+    const quickCorrectionRow = document.getElementById('quickCorrectionRow');
+    const quickCorrectionButtons = document.getElementById('quickCorrectionButtons');
 
     const defHours = getDefaultHoursForDate(dateInput.value);
     const targetH = getTargetHoursForDate(dateInput.value);
@@ -2415,6 +2512,91 @@
       hintFriday.style.display = (defHours === 7.0) ? 'inline-block' : 'none';
     }
 
+    const rec = getRecordedHoursForEmployeeAndDate(selEmp.value, dateInput.value);
+    const pDate = parseAnyDate(dateInput.value);
+    const dateDisplayStr = pDate ? formatGermanDate(pDate) : dateInput.value;
+
+    // 1. Box für erfasste Arbeitszeit & Schnellkorrektur
+    if (recordedBox && (rec.rawWorkH > 0 || rec.manualWorkH > 0 || rec.correctionH > 0)) {
+      recordedBox.style.display = 'block';
+      if (lblRecordedDate) lblRecordedDate.textContent = dateDisplayStr;
+      if (lblCurrentWorkHours) {
+        if (rec.correctionH > 0) {
+          lblCurrentWorkHours.innerHTML = `${formatNumber(rec.netWorkH, 2)} Std. <span style="font-size: 0.75rem; font-weight: normal; color: #dc2626;">(Ursprünglich ${formatNumber(rec.rawWorkH + rec.manualWorkH, 2)}h - ${formatNumber(rec.correctionH, 2)}h Abzug)</span>`;
+        } else {
+          lblCurrentWorkHours.textContent = `${formatNumber(rec.netWorkH, 2)} Std.`;
+        }
+      }
+
+      if (lblCurrentTargetDiff) {
+        if (targetH > 0) {
+          if (rec.netWorkH > targetH) {
+            const diff = rec.netWorkH - targetH;
+            lblCurrentTargetDiff.textContent = `(Soll: ${formatNumber(targetH, 1)}h | +${formatNumber(diff, 1)}h Überstunden)`;
+            lblCurrentTargetDiff.style.color = '#b45309';
+          } else if (rec.netWorkH < targetH) {
+            const diff = targetH - rec.netWorkH;
+            lblCurrentTargetDiff.textContent = `(Soll: ${formatNumber(targetH, 1)}h | -${formatNumber(diff, 1)}h Unterstunden)`;
+            lblCurrentTargetDiff.style.color = '#dc2626';
+          } else {
+            lblCurrentTargetDiff.textContent = `(Soll: genau ${formatNumber(targetH, 1)}h erreicht)`;
+            lblCurrentTargetDiff.style.color = '#166534';
+          }
+        } else {
+          lblCurrentTargetDiff.textContent = `(Wochenende: keine reguläre Sollzeit)`;
+          lblCurrentTargetDiff.style.color = '#64748b';
+        }
+      }
+
+      // Schnellkorrektur-Buttons
+      if (quickCorrectionRow && quickCorrectionButtons) {
+        if (rec.netWorkH > 0) {
+          quickCorrectionRow.style.display = 'block';
+          const buttons = [];
+
+          if (targetH > 0 && rec.netWorkH > targetH) {
+            const diff = rec.netWorkH - targetH;
+            buttons.push(`
+              <button type="button" class="btn-korr-chip target-soll" onclick="window.applyQuickCorrection(${diff}, ${targetH}, 'Sollzeit ${formatNumber(targetH, 1)}h')" title="Zuviel erfasste ${formatNumber(diff, 1)}h abziehen, damit genau ${formatNumber(targetH, 1)}h Sollzeit verbleiben">
+                ⚡ Auf Sollzeit (${formatNumber(targetH, 1)}h) setzen (-${formatNumber(diff, 1).replace(',0', '')}h)
+              </button>
+            `);
+          }
+
+          if (rec.netWorkH > 8.0 && targetH !== 8.0) {
+            const diff = rec.netWorkH - 8.0;
+            buttons.push(`
+              <button type="button" class="btn-korr-chip" onclick="window.applyQuickCorrection(${diff}, 8.0, '8,0 Std.')" title="Auf 8,0 Std. setzen">
+                Auf 8,0h setzen (-${formatNumber(diff, 1).replace(',0', '')}h)
+              </button>
+            `);
+          }
+
+          if (rec.netWorkH > 7.0 && targetH !== 7.0) {
+            const diff = rec.netWorkH - 7.0;
+            buttons.push(`
+              <button type="button" class="btn-korr-chip" onclick="window.applyQuickCorrection(${diff}, 7.0, '7,0 Std.')" title="Auf 7,0 Std. setzen">
+                Auf 7,0h setzen (-${formatNumber(diff, 1).replace(',0', '')}h)
+              </button>
+            `);
+          }
+
+          buttons.push(`
+            <button type="button" class="btn-korr-chip" onclick="window.applyQuickCorrection(${rec.netWorkH}, 0, 'Stornierung (0h)')" title="Kompletten Tag stornieren">
+              Komplett stornieren (-${formatNumber(rec.netWorkH, 1).replace(',0', '')}h)
+            </button>
+          `);
+
+          quickCorrectionButtons.innerHTML = buttons.join('');
+        } else {
+          quickCorrectionRow.style.display = 'none';
+        }
+      }
+    } else if (recordedBox) {
+      recordedBox.style.display = 'none';
+    }
+
+    // 2. Bestehenden Eintrag suchen
     const existing = findManualEntry(selEmp.value, dateInput.value);
     if (existing) {
       editIdInput.value = existing.id;
@@ -2429,8 +2611,6 @@
       btnDelete.style.display = 'none';
       existingInfo.style.display = 'none';
 
-      // Prüfen, ob an diesem Tag Stunden fehlen (Sollzeit nicht erreicht)
-      const rec = getRecordedHoursForEmployeeAndDate(selEmp.value, dateInput.value);
       const isWeekday = (targetH > 0);
       const totalRec = rec.workH + rec.absH;
       const missingH = (forcedMissingHours !== null && forcedMissingHours !== undefined) 
@@ -2438,7 +2618,6 @@
         : (isWeekday && totalRec < targetH ? (targetH - totalRec) : 0);
 
       if (missingH > 0 && isWeekday) {
-        // Fall: Fehlzeit / Unterstunden an einem Werktag!
         hoursInput.value = Number(missingH).toFixed(1);
         typeSelect.value = (rec.workH > 0) ? 'Überstundenabbau' : 'Krank';
         noteInput.value = '';
@@ -2461,64 +2640,44 @@
       }
     }
 
+    if (window.updateManualHoursCalcFeedback) {
+      window.updateManualHoursCalcFeedback();
+    }
+  }
+
+  function openManualEntryModal(ressourcennummer = '', dateIso = '', forcedMissingHours = null) {
+    populateManualModalEmployees();
+
+    const modal = document.getElementById('modalManualEntry');
+    const selEmp = document.getElementById('manualSelectMitarbeiter');
+    const dateInput = document.getElementById('manualDateInput');
+
+    if (ressourcennummer) {
+      const normTarget = normalizeResourceKey(ressourcennummer);
+      let found = false;
+      for (const opt of selEmp.options) {
+        if (normalizeResourceKey(opt.value) === normTarget) {
+          selEmp.value = opt.value;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        selEmp.value = ressourcennummer;
+      }
+    }
+    if (dateIso) {
+      dateInput.value = dateIso;
+    } else if (!dateInput.value) {
+      dateInput.value = formatDateIso(new Date());
+    }
+
+    updateManualModalState(forcedMissingHours);
     modal.style.display = 'flex';
   }
 
   function checkAndPrepopulateExistingEntry() {
-    const selEmp = document.getElementById('manualSelectMitarbeiter');
-    const dateInput = document.getElementById('manualDateInput');
-    const typeSelect = document.getElementById('manualTypeSelect');
-    const hoursInput = document.getElementById('manualHoursInput');
-    const noteInput = document.getElementById('manualNoteInput');
-    const editIdInput = document.getElementById('manualEditId');
-    const btnDelete = document.getElementById('btnDeleteManualEntry');
-    const existingInfo = document.getElementById('manualExistingInfo');
-    const hintFriday = document.getElementById('hintFridayHours');
-    const contextBanner = document.getElementById('manualContextBanner');
-
-    const defHours = getDefaultHoursForDate(dateInput.value);
-    const targetH = getTargetHoursForDate(dateInput.value);
-    if (hintFriday) {
-      hintFriday.style.display = (defHours === 7.0) ? 'inline-block' : 'none';
-    }
-
-    const existing = findManualEntry(selEmp.value, dateInput.value);
-    if (existing) {
-      editIdInput.value = existing.id;
-      typeSelect.value = existing.type;
-      hoursInput.value = Number(existing.stunden).toFixed(1);
-      noteInput.value = existing.note || '';
-      btnDelete.style.display = 'block';
-      existingInfo.style.display = 'block';
-      if (contextBanner) contextBanner.style.display = 'none';
-    } else {
-      editIdInput.value = '';
-      btnDelete.style.display = 'none';
-      existingInfo.style.display = 'none';
-
-      const rec = getRecordedHoursForEmployeeAndDate(selEmp.value, dateInput.value);
-      const isWeekday = (targetH > 0);
-      const totalRec = rec.workH + rec.absH;
-      const missingH = (isWeekday && totalRec < targetH) ? (targetH - totalRec) : 0;
-
-      if (missingH > 0 && isWeekday) {
-        hoursInput.value = Number(missingH).toFixed(1);
-        typeSelect.value = (rec.workH > 0) ? 'Überstundenabbau' : 'Krank';
-        if (contextBanner) {
-          contextBanner.style.display = 'block';
-          contextBanner.innerHTML = `
-            <div style="font-weight: 700; margin-bottom: 3px;">⚠️ Fehlzeiten-Nachfrage (Soll-Arbeitszeit: ${formatNumber(targetH, 1)} Std.)</div>
-            <div>Bisher erfasst: <strong>${formatNumber(rec.workH, 1)} Std. Arbeit</strong>. Es fehlen <strong>${formatNumber(missingH, 1)} Std.</strong></div>
-            <div style="margin-top: 4px; font-size: 0.78rem; opacity: 0.9;">
-              Bitte wähle den Grund für die Minderarbeit (z. B. <strong>Überstunden abgefeiert / Abbau</strong>, <strong>Krankheit</strong>, <strong>Urlaub</strong> oder <strong>Arbeitszeit-Nachbuchung</strong>).
-            </div>
-          `;
-        }
-      } else {
-        hoursInput.value = defHours.toFixed(1);
-        if (contextBanner) contextBanner.style.display = 'none';
-      }
-    }
+    updateManualModalState();
   }
 
   function submitManualEntryForm() {
@@ -2559,6 +2718,107 @@
 
     document.getElementById('modalManualEntry').style.display = 'none';
   }
+
+  // ==========================================================================
+  // GLOBALE HILFSFUNKTIONEN FÜR SCHNELLKORREKTUR & ZEILENBEARBEITUNG
+  // ==========================================================================
+  window.applyQuickCorrection = (deduction, targetNet, label) => {
+    const typeSelect = document.getElementById('manualTypeSelect');
+    const hoursInput = document.getElementById('manualHoursInput');
+    const noteInput = document.getElementById('manualNoteInput');
+    const selEmp = document.getElementById('manualSelectMitarbeiter');
+    const dateInput = document.getElementById('manualDateInput');
+    const rec = getRecordedHoursForEmployeeAndDate(selEmp.value, dateInput.value);
+
+    typeSelect.value = 'Arbeitszeit-Abzug';
+    hoursInput.value = Number(deduction).toFixed(1);
+    noteInput.value = `Korrektur: Arbeitszeit von ${formatNumber(rec.netWorkH, 1)}h auf ${formatNumber(targetNet, 1)}h (${label}) reduziert`;
+
+    if (window.updateManualHoursCalcFeedback) {
+      window.updateManualHoursCalcFeedback();
+    }
+    showToast(`Korrektur (-${formatNumber(deduction, 1)} Std.) vorgemerkt. Klicke auf 'Speichern' zum Übernehmen.`, 'info');
+  };
+
+  window.updateManualHoursCalcFeedback = () => {
+    const typeSelect = document.getElementById('manualTypeSelect');
+    const hoursInput = document.getElementById('manualHoursInput');
+    const selEmp = document.getElementById('manualSelectMitarbeiter');
+    const dateInput = document.getElementById('manualDateInput');
+    const feedback = document.getElementById('manualHoursCalcFeedback');
+    const lblHoursTitle = document.getElementById('lblManualHoursTitle');
+    if (!typeSelect || !hoursInput || !feedback) return;
+
+    const isAbzug = (typeSelect.value === 'Arbeitszeit-Abzug');
+    if (lblHoursTitle) {
+      lblHoursTitle.innerHTML = isAbzug 
+        ? `Abzuziehende Stunden (Kürzung):`
+        : `Stunden: <span id="hintFridayHours" style="display:none; font-size:0.75rem; color:#0369a1; font-weight:600; margin-left: 6px;">✨ Freitag: 7 Std. voreingestellt</span>`;
+    }
+
+    if (isAbzug) {
+      const rec = getRecordedHoursForEmployeeAndDate(selEmp ? selEmp.value : '', dateInput ? dateInput.value : '');
+      const deductVal = parseFloat(hoursInput.value) || 0;
+      const resultNet = rec.netWorkH - deductVal;
+
+      feedback.style.display = 'block';
+      if (resultNet >= 0) {
+        feedback.style.background = '#f0fdf4';
+        feedback.style.border = '1px solid #bbf7d0';
+        feedback.style.color = '#166534';
+        feedback.innerHTML = `🟢 Tatsächliche Arbeitszeit nach Abzug: <strong>${formatNumber(rec.netWorkH, 1)}h</strong> - <strong>${formatNumber(deductVal, 1)}h</strong> = <strong>${formatNumber(resultNet, 2)} Std.</strong>`;
+      } else {
+        feedback.style.background = '#fef2f2';
+        feedback.style.border = '1px solid #fecaca';
+        feedback.style.color = '#991b1b';
+        feedback.innerHTML = `⚠️ Hinweis: Der Abzug (${formatNumber(deductVal, 1)}h) ist größer als die bisher erfasste Arbeitszeit (${formatNumber(rec.netWorkH, 1)}h). Arbeitszeit wird auf 0,0 Std. gesetzt.`;
+      }
+    } else {
+      feedback.style.display = 'none';
+    }
+  };
+
+  window.editBewegungsdatenRow = (id) => {
+    const item = state.bewegungsdaten.find(b => b.id === id);
+    if (!item) return;
+
+    const currentHours = Number(item.stunden) || 0;
+    const input = prompt(
+      `Arbeitszeit / Menge für diesen Eintrag bearbeiten:\n\n` +
+      `Mitarbeiter: ${item.name} (${item.ressourcennummer})\n` +
+      `Datum: ${item.dateDisplay}\n` +
+      `Auftrag: ${item.auftragsnummer} ${item.ort ? `(${item.ort})` : ''}\n\n` +
+      `Bisherige Stunden: ${formatNumber(currentHours, 2)} Std.\n\n` +
+      `Bitte neue Stunden eingeben (z. B. 8.0):`,
+      currentHours
+    );
+
+    if (input === null) return;
+    const newHours = parseFloat(input.trim().replace(',', '.'));
+    if (isNaN(newHours) || newHours < 0) {
+      alert('Bitte gib eine gültige Zahl größer oder gleich 0 ein.');
+      return;
+    }
+
+    if (item.preis && currentHours > 0) {
+      item.preis = (item.preis / currentHours) * newHours;
+    }
+    item.stunden = newHours;
+    showToast(`Stunden für ${item.name} am ${item.dateDisplay} auf ${formatNumber(newHours, 2)} Std. geändert.`, 'success');
+    renderApp();
+  };
+
+  window.deleteBewegungsdatenRow = (id) => {
+    const idx = state.bewegungsdaten.findIndex(b => b.id === id);
+    if (idx === -1) return;
+    const item = state.bewegungsdaten[idx];
+
+    if (confirm(`Möchtest du diese Buchungszeile wirklich löschen?\n\n${item.name} – ${item.dateDisplay} – ${item.auftragsnummer} (${formatNumber(item.stunden, 2)} Std.)`)) {
+      state.bewegungsdaten.splice(idx, 1);
+      showToast(`Eintrag (${item.name}, ${formatNumber(item.stunden, 2)} Std.) gelöscht.`, 'info');
+      renderApp();
+    }
+  };
 
   function setupDragAndDrop(dropZoneId, cardId, fileHandler) {
     const dropZone = document.getElementById(dropZoneId);
@@ -2799,6 +3059,7 @@
   function getAbsenceBadgeClass(type) {
     if (!type) return 'badge-sonstiges';
     const lower = String(type).trim().toLowerCase();
+    if (lower.includes('abzug') || lower.includes('kürzung') || lower.includes('korrektur')) return 'badge-korrektur';
     if (lower.includes('arbeit')) return 'badge-arbeit';
     if (lower.includes('krank')) return 'badge-krank';
     if (lower.includes('urlaub')) return 'badge-urlaub';
@@ -2810,6 +3071,7 @@
   function formatAbsenceShort(type, hours) {
     const hStr = formatNumber(hours, 1).replace(',0', '') + 'h';
     const lower = String(type).trim().toLowerCase();
+    if (lower.includes('abzug') || lower.includes('kürzung') || lower.includes('korrektur')) return `-${hStr} Korr`;
     if (lower.includes('arbeit')) return `+${hStr} AZ`;
     if (lower.includes('krank')) return `+${hStr} K`;
     if (lower.includes('urlaub')) return `+${hStr} U`;

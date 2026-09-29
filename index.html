@@ -286,11 +286,12 @@
                   <th data-sort="service" class="sortable">Leistung <span class="sort-icon"></span></th>
                   <th>Beschreibung</th>
                   <th data-sort="price" class="sortable text-right">Preis <span class="sort-icon"></span></th>
+                  <th class="text-center" style="width: 105px;">Aktionen</th>
                 </tr>
               </thead>
               <tbody id="detailTableBody">
                 <tr class="empty-row">
-                  <td colspan="9">
+                  <td colspan="10">
                     <div class="empty-state">
                       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                         <circle cx="12" cy="12" r="10"></circle>
@@ -308,6 +309,7 @@
                   <td class="text-right font-bold highlight-cell" id="footSumStunden">0,00</td>
                   <td colspan="2"></td>
                   <td class="text-right font-bold" id="footSumPreis">0,00 €</td>
+                  <td></td>
                 </tr>
               </tfoot>
             </table>
@@ -586,6 +588,18 @@
         <input type="hidden" id="manualEditId" value="">
         <div id="manualContextBanner" style="display: none; padding: 0.65rem 0.85rem; border-radius: 6px; font-size: 0.82rem; margin-bottom: 0.85rem; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;"></div>
 
+        <!-- Info-Box: Bisher erfasste Arbeitszeit & Schnellkorrektur (Zuviel erfasste Stunden abziehen) -->
+        <div id="manualRecordedBox" style="display: none; padding: 0.65rem 0.85rem; border-radius: 6px; font-size: 0.82rem; margin-bottom: 0.85rem; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
+            <div>Bisher erfasste Arbeitszeit am <span id="lblRecordedDate" style="font-weight: 700;">--</span>: <strong id="lblCurrentWorkHours" style="font-size: 0.95rem; color: #0f172a;">0,0 Std.</strong></div>
+            <div id="lblCurrentTargetDiff" style="font-size: 0.78rem; font-weight: 700;"></div>
+          </div>
+          <div id="quickCorrectionRow" style="display: none; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed #cbd5e1;">
+            <div style="font-size: 0.75rem; color: #475569; margin-bottom: 0.35rem; font-weight: 600;">⚡ Schnellkorrektur (Zuviel gebuchte Arbeitszeit abziehen):</div>
+            <div class="quick-korrektur-buttons" id="quickCorrectionButtons"></div>
+          </div>
+        </div>
+
         <div class="form-group" style="margin-bottom: 0.85rem;">
           <label for="manualSelectMitarbeiter" style="display:block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem;">Mitarbeiter:</label>
           <select id="manualSelectMitarbeiter" class="input-control">
@@ -602,6 +616,7 @@
             <label for="manualTypeSelect" style="display:block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem;">Art des Eintrags:</label>
             <select id="manualTypeSelect" class="input-control">
               <option value="Arbeitszeit" selected>Reguläre Arbeitszeit (Nachbuchung)</option>
+              <option value="Arbeitszeit-Abzug">Arbeitszeit-Korrektur (Zuviel gebuchte Stunden abziehen)</option>
               <option value="Krank">Krankheit / AU</option>
               <option value="Urlaub">Urlaub</option>
               <option value="Überstundenabbau">Überstundenabbau</option>
@@ -613,17 +628,19 @@
 
         <div class="form-group" style="margin-bottom: 0.85rem;">
           <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.3rem;">
-            <label for="manualHoursInput" style="font-size: 0.8rem; font-weight: 600;">
+            <label for="manualHoursInput" id="lblManualHoursTitle" style="font-size: 0.8rem; font-weight: 600;">
               Stunden: <span id="hintFridayHours" style="display:none; font-size:0.75rem; color:#0369a1; font-weight:600; margin-left: 6px;">✨ Freitag: 7 Std. voreingestellt</span>
             </label>
             <div class="quick-hours-buttons">
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '1.0'">1h</button>
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '4.0'">4h</button>
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '7.0'">7h (Fr)</button>
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '8.0'">8h (Mo-Do)</button>
+              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '1.0'; window.updateManualHoursCalcFeedback();">1h</button>
+              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '2.0'; window.updateManualHoursCalcFeedback();">2h</button>
+              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '4.0'; window.updateManualHoursCalcFeedback();">4h</button>
+              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '7.0'; window.updateManualHoursCalcFeedback();">7h (Fr)</button>
+              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '8.0'; window.updateManualHoursCalcFeedback();">8h (Mo-Do)</button>
             </div>
           </div>
           <input type="number" id="manualHoursInput" class="input-control" step="0.25" min="0.25" max="24" value="8.0" placeholder="z.B. 7.0 oder 8.0">
+          <div id="manualHoursCalcFeedback" style="display: none; font-size: 0.8rem; font-weight: 600; margin-top: 0.35rem; padding: 0.3rem 0.6rem; border-radius: 4px;"></div>
         </div>
 
         <div class="form-group" style="margin-bottom: 0.85rem;">
