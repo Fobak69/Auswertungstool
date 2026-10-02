@@ -1038,8 +1038,10 @@ class ExcelInspectionEngine:
                 # MUSS der Wert als Text mit number_format = '@' gespeichert werden,
                 # da Excel führende Nullen bei reinen Zahlen sonst abschneidet!
                 try:
-                    s_val = str(new_val).strip()
-                    if s_val.isdigit() and s_val.startswith("0") and len(s_val) > 1:
+                    s_val = str(new_val).strip() if new_val is not None else ""
+                    if not s_val:
+                        cell.value = None
+                    elif s_val.isdigit() and s_val.startswith("0") and len(s_val) > 1:
                         cell.number_format = "@"
                         cell.value = s_val
                     elif s_val.isdigit():

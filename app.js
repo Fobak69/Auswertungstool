@@ -2265,9 +2265,14 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- GENERAL-BUTTON: Datei erstellen & Änderungen übernehmen ---
   if (btnGeneralApply) {
     btnGeneralApply.addEventListener("click", async () => {
-      if (!state.allResults || state.allResults.length === 0) {
-        showToast("Bitte führen Sie zuerst eine Prüfung durch.");
+      if (!state.targetWorkbook || !state.currentTargetSheet) {
+        alert("Bitte laden Sie zuerst eine zu prüfende Excel-Datei.");
         return;
+      }
+
+      // Falls die Prüfung noch nicht lief, automatisch einmal im Hintergrund ausführen
+      if (!state.allResults || state.allResults.length === 0) {
+        runInspection({ skipScroll: true, skipToast: true });
       }
 
       btnGeneralApply.disabled = true;
@@ -2275,16 +2280,18 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast("General-Button: Erstelle korrigierte Excel-Datei...");
 
       // 1. Alle im Formular manuell eingegebenen Werte sammeln
-      resultsTbody.querySelectorAll(".manual-input").forEach(input => {
-        const id = input.dataset.id;
-        const val = input.value.trim();
-        const item = state.allResults.find(r => r.id === id);
-        if (item && val && val !== item.original_value) {
-          item.current_value = val;
-          item.is_corrected = true;
-          state.appliedCorrections[id] = val;
-        }
-      });
+      if (resultsTbody) {
+        resultsTbody.querySelectorAll(".manual-input").forEach(input => {
+          const id = input.dataset.id;
+          const val = input.value.trim();
+          const item = state.allResults ? state.allResults.find(r => r.id === id) : null;
+          if (item && val !== item.original_value) {
+            item.current_value = val;
+            item.is_corrected = true;
+            state.appliedCorrections[id] = val;
+          }
+        });
+      }
 
       // 2. Excel-Datei 1:1 klonen und aufbauen
       try {
@@ -2328,14 +2335,16 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnFixZahlendreher) {
     btnFixZahlendreher.addEventListener("click", () => {
       let count = 0;
-      state.allResults.forEach(r => {
-        if ((r.status === "ZAHLENDREHER" || r.status === "ZIFFERENTAUSCH") && r.suggestion) {
-          r.current_value = r.suggestion;
-          r.is_corrected = true;
-          state.appliedCorrections[r.id] = r.suggestion;
-          count++;
-        }
-      });
+      if (state.allResults) {
+        state.allResults.forEach(r => {
+          if ((r.status === "ZAHLENDREHER" || r.status === "ZIFFERENTAUSCH") && r.suggestion) {
+            r.current_value = r.suggestion;
+            r.is_corrected = true;
+            state.appliedCorrections[r.id] = r.suggestion;
+            count++;
+          }
+        });
+      }
       updateFilterCounts(state.allResults);
       renderResultsTable();
       if (state.timesheetData) renderTimesheetMatrix();
@@ -2348,10 +2357,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnResetFixes) {
     btnResetFixes.addEventListener("click", () => {
       if (!confirm("Alle Korrekturen rückgängig machen?")) return;
-      state.allResults.forEach(r => {
-        r.current_value = r.original_value;
-        r.is_corrected = false;
-      });
+      if (state.allResults) {
+        state.allResults.forEach(r => {
+          r.current_value = r.original_value;
+          r.is_corrected = false;
+        });
+      }
       state.appliedCorrections = {};
       updateFilterCounts(state.allResults);
       renderResultsTable();
@@ -2400,13 +2411,13 @@ document.addEventListener("DOMContentLoaded", () => {
       throw new Error("Arbeitsblatt in der Prüfdatei nicht gefunden.");
     }
 
-    // 1. Eingaben aus geöffneten Eingabefeldern in der Prüfliste einsammeln
+    // 1. Manuelle Eingaben aus geöffneten Eingabefeldern in der Prüfliste einsammeln
     if (resultsTbody) {
       resultsTbody.querySelectorAll(".manual-input").forEach(input => {
         const id = input.dataset.id;
         const val = input.value.trim();
         const item = state.allResults ? state.allResults.find(r => r.id === id) : null;
-        if (item && val && val !== item.original_value) {
+        if (item && val !== item.original_value) {
           item.current_value = val;
           item.is_corrected = true;
           state.appliedCorrections[id] = val;
@@ -2414,117 +2425,83 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 2. Alle Prüfergebnisse verarbeiten:
-    // Sowohl vom Nutzer angewendete Korrekturen als auch alle automatischen Korrekturvorschläge
-    // (Zahlendreher, Zifferntausch, Tippfehler, Ziffer zuviel/fehlt, 0000-Formatierung)
-    // werden direkt in die Arbeitsmappe geschrieben.
+    let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+    let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+
+    // Helper: Schreibt einen Wert mit korrekter Formatierung in eine Zelle
+    function writeValueToCell(rowNum, colNum, rawVal) {
+      const row = ws.getRow(rowNum);
+      if (!row) return;
+      const cell = row.getCell(colNum);
+
+      if (rawVal === null || rawVal === undefined || rawVal === "") {
+        cell.value = null;
+        return;
+      }
+
+      const valStr = String(rawVal).trim();
+
+      if (colNum === dateColIdx || colNum === 1) {
+        const dParts = valStr.split("-");
+        let dispDate = valStr;
+        if (dParts.length === 3) {
+          dispDate = `${dParts[2]}.${dParts[1]}.${dParts[0]}`;
+        }
+        cell.value = dispDate;
+        cell.numFmt = "DD.MM.YYYY";
+      } else if (colNum === resColIdx || colNum === 3) {
+        let cleanRes = valStr.replace(/[,.]0+$/, "").trim();
+        if (/^\d{1,4}$/.test(cleanRes)) {
+          cleanRes = WebExcelEngine.padNumber(cleanRes, 4);
+          cell.value = parseInt(cleanRes, 10);
+          cell.numFmt = "0000";
+        } else {
+          cell.value = cleanRes;
+        }
+      } else if (/^-?\d+(\.\d+)?$/.test(valStr.replace(",", "."))) {
+        const num = parseFloat(valStr.replace(",", "."));
+        if (!isNaN(num)) {
+          cell.value = num;
+        } else {
+          cell.value = valStr;
+        }
+      } else {
+        cell.value = valStr;
+      }
+    }
+
+    // 2. Eindeutige Korrekturvorschläge aus den Prüfergebnissen verarbeiten
     if (state.allResults && Array.isArray(state.allResults)) {
       state.allResults.forEach(r => {
-        let valToApply = null;
-
-        // A. Manuell angewendete Korrektur aus state.appliedCorrections
-        if (state.appliedCorrections && state.appliedCorrections[r.id] !== undefined && state.appliedCorrections[r.id] !== "") {
-          valToApply = state.appliedCorrections[r.id];
-        }
-        // B. Im Resultat abweichender aktueller Wert
-        else if (r.current_value && r.current_value !== r.original_value) {
-          valToApply = r.current_value;
+        if (state.appliedCorrections && state.appliedCorrections[r.id] !== undefined) {
+          // Bereits in appliedCorrections vorhanden (z. B. vom Nutzer manuell geändert)
+        } else if (r.current_value && r.current_value !== r.original_value) {
           state.appliedCorrections[r.id] = r.current_value;
-        }
-        // C. Eindeutige Korrekturvorschläge (Zahlendreher, Tippfehler, Zifferntausch, etc.)
-        else if (r.suggestion && r.status !== "DATUM_WARNUNG" && r.status !== "NICHT_EXISTENT" && r.status !== "LEER") {
-          valToApply = r.suggestion;
+        } else if (r.suggestion && r.status !== "DATUM_WARNUNG" && r.status !== "NICHT_EXISTENT" && r.status !== "LEER") {
           state.appliedCorrections[r.id] = r.suggestion;
           r.current_value = r.suggestion;
           r.is_corrected = true;
         }
-
-        if (valToApply !== null && valToApply !== undefined) {
-          const row = ws.getRow(r.row);
-          if (row) {
-            const cell = row.getCell(r.col_idx);
-            const valStr = String(valToApply).trim();
-
-            if (r.col_idx === 1) {
-              cell.value = valStr;
-              cell.numFmt = "DD.MM.YYYY";
-            } else if (/^\d+$/.test(valStr) && valStr.startsWith("0") && valStr.length > 1) {
-              cell.value = parseInt(valStr, 10);
-              cell.numFmt = "0000";
-            } else if (/^\d+$/.test(valStr)) {
-              cell.value = parseInt(valStr, 10);
-              if (valStr.length <= 4) cell.numFmt = "0000";
-            } else if (/^-?\d+\.\d+$/.test(valStr.replace(",", "."))) {
-              cell.value = parseFloat(valStr.replace(",", "."));
-            } else {
-              cell.value = valStr;
-            }
-          }
-        }
       });
     }
 
-    // 2.5. Alle weiteren manuellen Korrekturen aus state.appliedCorrections
-    // (z. B. aus der Wochenübersicht, Zeilen-Modalen oder Gesamttabelle)
-    // explizit in die Arbeitsmappe schreiben, auch wenn die Spalte nicht in state.allResults war.
-    let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
-    let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
-
+    // 3. ALLE Korrekturen aus state.appliedCorrections (Wochenübersicht, Modale, Inline, Ergebnisse) in die Arbeitsmappe schreiben
     if (state.appliedCorrections) {
       Object.entries(state.appliedCorrections).forEach(([key, valToApply]) => {
-        if (valToApply !== null && valToApply !== undefined && key.includes("_")) {
+        if (key.includes("_")) {
           const parts = key.split("_");
           if (parts.length === 2) {
             const rNum = parseInt(parts[0], 10);
             const cNum = parseInt(parts[1], 10);
             if (!isNaN(rNum) && !isNaN(cNum) && rNum > 0 && cNum > 0) {
-              const row = ws.getRow(rNum);
-              if (row) {
-                const cell = row.getCell(cNum);
-                const valStr = String(valToApply).trim();
-
-                if (cNum === dateColIdx || cNum === 1) {
-                  if (valStr) {
-                    const dParts = valStr.split("-");
-                    let dispDate = valStr;
-                    if (dParts.length === 3) {
-                      dispDate = `${dParts[2]}.${dParts[1]}.${dParts[0]}`;
-                    }
-                    cell.value = dispDate;
-                    cell.numFmt = "DD.MM.YYYY";
-                  } else {
-                    cell.value = "";
-                  }
-                } else if (cNum === resColIdx || cNum === 3) {
-                  let cleanRes = valStr.replace(/[,.]0+$/, "").trim();
-                  if (/^\d{1,4}$/.test(cleanRes)) {
-                    cleanRes = WebExcelEngine.padNumber(cleanRes, 4);
-                    cell.value = parseInt(cleanRes, 10);
-                    cell.numFmt = "0000";
-                  } else {
-                    cell.value = cleanRes;
-                  }
-                } else if (/^-?\d+(\.\d+)?$/.test(valStr.replace(",", "."))) {
-                  const num = parseFloat(valStr.replace(",", "."));
-                  if (!isNaN(num)) {
-                    cell.value = num;
-                  } else {
-                    cell.value = valStr;
-                  }
-                } else {
-                  cell.value = valStr;
-                }
-              }
+              writeValueToCell(rNum, cNum, valToApply);
             }
           }
         }
       });
     }
 
-    // 3. Spalten-Formatierungen setzen (Datum DD.MM.YYYY, Ressource 0000)
-    dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
-    resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
-
+    // 4. Spalten-Formatierungen setzen (Datum DD.MM.YYYY, Ressource 0000)
     const maxCols = Math.max(ws.columnCount || 0, ws.actualRowCount ? ws.actualColumnCount || 0 : 0, 10);
     const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length : 0));
 
