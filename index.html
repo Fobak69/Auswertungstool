@@ -3,774 +3,594 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Excel-Auswertung | Tagesberichte & Wochenübersicht</title>
+  <title>Excel-Prüfer & Korrektur-Assistent (Web)</title>
   <link rel="stylesheet" href="style.css">
-  <!-- SheetJS: Lokale Version mit Fallback auf CDN -->
-  <script src="xlsx.full.min.js"></script>
+  <!-- ExcelJS für 100% clientseitige Excel-Verarbeitung im Browser -->
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script>
-    if (typeof XLSX === 'undefined') {
-      document.write('<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"><\/script>');
+    if (typeof ExcelJS === "undefined") {
+      document.write('<script src="libs/exceljs.min.js"><\/script>');
     }
   </script>
 </head>
 <body>
-  <!-- ==================== WEB APP HEADER ==================== -->
-  <header class="app-header no-print">
+  <!-- Kopfzeile -->
+  <header class="app-header">
     <div class="header-container">
       <div class="logo-area">
-        <div class="logo-icon">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <line x1="8" y1="13" x2="16" y2="13"></line>
-            <line x1="8" y1="17" x2="16" y2="17"></line>
-            <polyline points="10 9 9 9 8 9"></polyline>
-          </svg>
-        </div>
+        <div class="logo-icon">📊</div>
         <div>
-          <h1 class="app-title">Excel-Auswertung</h1>
-          <p class="app-subtitle">Lokale Analyse von Stammdaten &amp; Tagesberichten</p>
+          <h1 class="logo-title">Excel-Prüfer &amp; Korrektur-Assistent <span style="font-size: 0.75rem; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 9999px; margin-left: 6px; font-weight: 600; vertical-align: middle;">Cloud / Web</span></h1>
+          <p class="logo-subtitle">Automatische Erkennung von Zahlendrehern, Tippfehlern &amp; 1-Klick-Korrektur</p>
         </div>
       </div>
-
       <div class="header-actions">
-        <button id="btnDemoData" class="btn btn-outline" title="Beispieldaten mit Aufträgen, Orten &amp; Abwesenheiten laden">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="5 3 19 12 5 21 5 3"></polygon>
-          </svg>
-          Demo-Daten laden
-        </button>
-        <button id="btnOpenSettings" class="btn btn-secondary" title="Stammdaten, Aufträge, Orte &amp; Abwesenheiten verwalten">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-          Stammdaten &amp; Speicher
-        </button>
       </div>
     </div>
   </header>
 
-  <!-- ==================== UPLOAD BEREICH ==================== -->
-  <section class="upload-section no-print">
-    <div class="container">
+  <!-- Hauptinhalt -->
+  <main class="main-container">
+
+    <!-- Schritt 1: Datei-Upload / Drag & Drop -->
+    <section class="upload-section">
       <div class="upload-grid">
-        <!-- 1. Stammdaten Upload-Card -->
-        <div class="upload-card" id="cardStammdaten">
-          <div class="card-badge" id="badgeStammdatenStatus">Warten auf Datei</div>
-          <div class="card-icon blue">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-              <circle cx="9" cy="7" r="4"></circle>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-            </svg>
-          </div>
-          <div class="upload-card-content">
-            <h3>1. Stammdaten (Referenz)</h3>
-            <p class="card-desc">Spalte A: Mitarbeiternr. | B: Name MA | C: Auftragsnr. | D: Baustellen-Ort | E: Zusatzort | F: Fahrzeug/Geräte-Nr. | G: Geräte-Name</p>
-            <div class="storage-info" id="stammdatenStorageInfo">
-              <span class="status-indicator" id="indicatorStamm"></span>
-              <span id="txtStammdatenStatus">Keine Stammdaten im Browser gespeichert.</span>
+        
+        <!-- LINKE SPALTE: Zu prüfende Datei (Hauptdatei) -->
+        <div class="upload-col-left">
+          <div id="drop-tgt" class="drop-card drop-tgt">
+            <div class="drop-card-header">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span class="step-badge" style="background: #2563eb;">1</span>
+                <h3>Zu prüfende Datei (.xlsx)</h3>
+              </div>
+              <span id="tgt-status-badge" class="badge badge-secondary" style="display: none;">Warten auf Datei</span>
             </div>
-            <div class="file-drop-zone" id="dropZoneStamm">
-              <input type="file" id="fileInputStamm" accept=".xlsx, .xls, .csv" class="file-input-hidden">
-              <button type="button" class="btn btn-sm btn-outline" onclick="document.getElementById('fileInputStamm').click()">
-                Datei wählen
-              </button>
-              <span class="drop-hint">oder Datei hierher ziehen</span>
+            <div class="drop-zone-content">
+              <div class="drop-icon">📘</div>
+              <p class="drop-text"><strong>Hier hineinziehen</strong> oder klicken</p>
+              <p class="drop-subtext">Auftragsliste, Inventur oder Daten mit möglichen Fehlern</p>
+              <input type="file" id="input-tgt" class="file-input" accept=".xlsx,.xls">
+            </div>
+            <div id="tgt-file-info" class="file-info hidden">
+              <div class="file-info-icon" style="color: #2563eb;">✅</div>
+              <div class="file-info-text">
+                <strong id="tgt-filename">dateiname.xlsx</strong>
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 6px 0;">Zu prüfende Datei aktiv</p>
+                <div class="sheet-select-row" style="margin-bottom: 0.6rem;">
+                  <label for="select-tgt-sheet">Arbeitsblatt:</label>
+                  <select id="select-tgt-sheet" class="form-select form-select-sm"></select>
+                </div>
+                <div class="tgt-actions-row">
+                  <button type="button" id="btn-change-tgt" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.8rem;">Andere Datei wählen</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- 2. Bewegungsdaten Upload-Card -->
-        <div class="upload-card" id="cardBewegungsdaten">
-          <div class="card-badge" id="badgeBewegungStatus">Warten auf Datei</div>
-          <div class="card-icon emerald">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-              <line x1="16" y1="2" x2="16" y2="6"></line>
-              <line x1="8" y1="2" x2="8" y2="6"></line>
-              <line x1="3" y1="10" x2="21" y2="10"></line>
-            </svg>
-          </div>
-          <div class="upload-card-content">
-            <h3>2. Bewegungsdaten (Tagesberichte)</h3>
-            <p class="card-desc">Spalte A: Datum | B: Auftragsnr. | C: Ressourcennr. | D: Std./Menge | E: Leistung | F: Beschr. | G: Preis</p>
-            <div class="storage-info" id="bewegungStorageInfo">
-              <span class="status-indicator" id="indicatorBewegung"></span>
-              <span id="txtBewegungStatus">Noch keine Tagesberichte geladen.</span>
+        <!-- RECHTE SPALTE: Referenzdatei & Mitarbeiterdatei -->
+        <div class="upload-col-right">
+          
+          <!-- Referenz- / Stammdaten-Datei -->
+          <div id="drop-ref" class="drop-card drop-ref">
+            <div class="drop-card-header">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span class="step-badge" style="background: #059669;">2</span>
+                <h3>Referenz- / Stammdaten-Datei (.xlsx)</h3>
+              </div>
+              <span id="ref-storage-badge" class="badge badge-secondary">Nicht geladen</span>
             </div>
-            <div class="file-drop-zone" id="dropZoneBewegung">
-              <input type="file" id="fileInputBewegung" accept=".xlsx, .xls, .csv" class="file-input-hidden">
-              <button type="button" class="btn btn-sm btn-outline" onclick="document.getElementById('fileInputBewegung').click()">
-                Datei wählen
-              </button>
-              <span class="drop-hint">oder Datei hierher ziehen</span>
+            <div class="drop-zone-content">
+              <div class="drop-icon">📗</div>
+              <p class="drop-text"><strong>Hier hineinziehen</strong> oder klicken</p>
+              <p class="drop-subtext">Enthält alle gültigen Nummern und Stammdaten</p>
+              <input type="file" id="input-ref" class="file-input" accept=".xlsx,.xls">
+            </div>
+            <div id="ref-file-info" class="file-info hidden">
+              <div class="file-info-icon" style="color: #059669;">✅</div>
+              <div class="file-info-text">
+                <strong id="ref-filename">dateiname.xlsx</strong>
+                <p id="ref-info-detail" style="font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 6px 0;">💾 Im Browser gespeichert (dauerhaft erhalten)</p>
+                <div class="sheet-select-row" style="margin-bottom: 0.6rem;">
+                  <label for="select-ref-sheet">Arbeitsblatt:</label>
+                  <select id="select-ref-sheet" class="form-select form-select-sm"></select>
+                </div>
+                <div class="ref-actions-row">
+                  <button type="button" id="btn-change-ref" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.8rem;">Neu laden / Ändern</button>
+                  <button type="button" id="btn-clear-ref" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem; color: #dc2626;" title="Aus dem Browser löschen">Löschen</button>
+                  <button type="button" id="btn-download-ref" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem; color: #059669;" title="Aktualisierte Referenzdatei mit allen neuen Nummern herunterladen">📥 Herunterladen</button>
+                </div>
+              </div>
             </div>
           </div>
+
+          <!-- Mitarbeiter-Stammdaten -->
+          <div id="drop-staff" class="drop-card drop-staff">
+            <div class="drop-card-header">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span class="step-badge" style="background: #0284c7;">👤</span>
+                <h3>Mitarbeiter-Stammdaten (.xlsx, .csv)</h3>
+              </div>
+              <span id="staff-storage-badge" class="badge badge-leer-ok">Optional</span>
+            </div>
+            <div class="drop-zone-content" id="staff-drop-zone-content">
+              <div class="drop-icon">👥</div>
+              <p class="drop-text"><strong>Hier hineinziehen</strong> oder klicken</p>
+              <p class="drop-subtext">Spalte A: Nummer, Spalte B: Name (keine Kopfzeilen nötig)</p>
+              <input type="file" id="input-staff" class="file-input" accept=".xlsx,.xls,.csv">
+            </div>
+            <div id="staff-file-info" class="file-info hidden">
+              <div class="file-info-icon" style="color: #0284c7;">👤</div>
+              <div class="file-info-text">
+                <strong id="staff-info-title">Keine Mitarbeiter geladen</strong>
+                <p id="staff-info-detail" style="font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 6px 0;">💾 Im Browser gespeichert</p>
+                <div class="staff-actions-row">
+                  <button type="button" id="btn-change-staff" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.8rem;">Neu laden / Ändern</button>
+                  <button type="button" id="btn-clear-staff" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem; color: #dc2626;" title="Aus dem Browser löschen">Löschen</button>
+                  <button type="button" id="btn-download-staff-template" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem;" title="Muster-Excel herunterladen">Muster-Vorlage</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Schritt 2: Spalten-Zuordnung & Einstellungen -->
+    <section id="config-section" class="card config-card hidden">
+      <div class="card-header-flex">
+        <div class="title-with-badge">
+          <span class="step-badge">3</span>
+          <h3>Spalten-Zuordnung &amp; Prüfeinstellungen</h3>
+        </div>
+        <div class="mode-selector">
+          <label class="mode-label">Prüfmodus:</label>
+          <label class="radio-chip">
+            <input type="radio" name="check-mode" value="pool" checked>
+            <span>Gültigkeit im Wertepool (Standard)</span>
+          </label>
+          <label class="radio-chip">
+            <input type="radio" name="check-mode" value="row">
+            <span>1:1 Zeilenabgleich</span>
+          </label>
         </div>
       </div>
-    </div>
-  </section>
 
-  <!-- ==================== TAB NAVIGATION ==================== -->
-  <nav class="tabs-nav no-print">
-    <div class="container nav-container">
-      <div class="tab-buttons">
-        <button class="tab-button active" data-tab="tabDetail">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="7" height="7"></rect>
-            <rect x="14" y="3" width="7" height="7"></rect>
-            <rect x="14" y="14" width="7" height="7"></rect>
-            <rect x="3" y="14" width="7" height="7"></rect>
-          </svg>
-          Detail-Auswertung
-          <span class="counter-badge" id="navCountDetail">0</span>
+      <!-- Zusätzliche Prüfeinstellungen: Datumsprüfung für Spalte A -->
+      <div class="date-check-card">
+        <div class="date-check-header">
+          <label class="date-check-title" title="Prüft, ob die Datumswerte in Spalte A im erwarteten Zeitraum liegen">
+            <input type="checkbox" id="chk-date-validation" checked>
+            <span>📅 Datumsprüfung für Spalte A (Prüfung auf aktuellen Zeitraum)</span>
+          </label>
+          <span class="badge badge-ok" id="badge-date-status">Aktiv (Letzte 3 Wochen)</span>
+        </div>
+        <div class="date-check-options-row" id="date-check-controls">
+          <label class="radio-chip">
+            <input type="radio" name="date-mode" value="weeks" checked>
+            <span>Relativ: Letzte</span>
+          </label>
+          <input type="number" id="input-date-weeks" min="1" max="104" value="3" class="date-input-num" title="Anzahl der Wochen in die Vergangenheit">
+          <span style="font-size: 0.88rem; color: var(--text-muted);">Wochen (Standard: 3 Wochen, keine Zukunftsdaten)</span>
+          
+          <span style="color: var(--border); margin: 0 0.5rem;">|</span>
+          
+          <label class="radio-chip">
+            <input type="radio" name="date-mode" value="custom">
+            <span>Fester Zeitraum:</span>
+          </label>
+          <span style="font-size: 0.85rem;">Von:</span>
+          <input type="date" id="input-date-start" class="date-input-val">
+          <span style="font-size: 0.85rem;">Bis:</span>
+          <input type="date" id="input-date-end" class="date-input-val">
+        </div>
+        <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.35rem;">
+          💡 Liegt das Datum in Spalte A weiter zurück oder in der Zukunft, wird automatisch eine Warnung <em>„Datum eventuell falsch“</em> angezeigt.
+        </div>
+      </div>
+
+      <div class="mapping-table-wrapper">
+        <p class="mapping-hint">Wählen Sie aus, welche Spalten gegen die Referenz abgeglichen werden sollen:</p>
+        <table class="mapping-table">
+          <thead>
+            <tr>
+              <th width="45"><input type="checkbox" id="check-all-cols" title="Alle Spalten auswählen"></th>
+              <th>Spalte in Prüfdatei</th>
+              <th width="35">➔</th>
+              <th>Vergleichen mit Referenz-Spalte</th>
+              <th width="220">Leere Zellen erlauben <span style="font-weight: normal; font-size: 0.75rem; color: #64748b;">(z.B. optional)</span></th>
+            </tr>
+          </thead>
+          <tbody id="mapping-tbody">
+            <!-- Dynamisch generiert -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="config-actions">
+        <button id="btn-start-check" class="btn btn-primary btn-lg">
+          <span class="icon">🚀</span> Prüfung starten
         </button>
-        <button class="tab-button" data-tab="tabWoche">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-            <circle cx="9" cy="7" r="4"></circle>
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-          </svg>
-          Wochenübersicht (Personal)
-          <span class="counter-badge" id="navCountWoche">0</span>
-        </button>
       </div>
+    </section>
 
-      <div class="tab-meta" id="syncStatus">
-        <span class="sync-dot"></span>
-        <span id="syncStatusText">Bereit</span>
-      </div>
-    </div>
-  </nav>
-
-  <!-- ==================== MAIN CONTENT CONTAINER ==================== -->
-  <main class="main-content">
-    <div class="container">
-
-      <!-- ==================== TAB 1: DETAIL-AUSWERTUNG ==================== -->
-      <div id="tabDetail" class="tab-content active">
-        <!-- Filter Card -->
-        <div class="filter-card card no-print">
-          <div class="filter-header">
-            <div class="filter-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
-              </svg>
-              <span>Filter &amp; Suche</span>
-            </div>
-            <div class="filter-actions">
-              <button id="btnResetFilters" class="btn btn-text btn-sm">Filter zurücksetzen</button>
-            </div>
-          </div>
-
-          <div class="filter-grid">
-            <!-- Datum Von -->
-            <div class="filter-group">
-              <label for="filterDateFrom">Datum von:</label>
-              <input type="date" id="filterDateFrom" class="input-control">
-            </div>
-
-            <!-- Datum Bis -->
-            <div class="filter-group">
-              <label for="filterDateTo">Datum bis:</label>
-              <input type="date" id="filterDateTo" class="input-control">
-            </div>
-
-            <!-- Kategorie -->
-            <div class="filter-group">
-              <label for="filterCategory">Kategorie:</label>
-              <select id="filterCategory" class="input-control">
-                <option value="">Alle Kategorien</option>
-                <option value="Mitarbeiter">Mitarbeiter</option>
-                <option value="Fahrzeug">Fahrzeug</option>
-                <option value="Maschine">Maschine</option>
-              </select>
-            </div>
-
-            <!-- Textsuche (inkl. Ort) -->
-            <div class="filter-group filter-search">
-              <label for="filterSearch">Textsuche (Name / Auftrag / Ort / Ressource):</label>
-              <div class="search-input-wrapper">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                </svg>
-                <input type="text" id="filterSearch" placeholder="z.B. Mustermann, AUF-101, Berlin oder Krank..." class="input-control with-icon">
-                <button id="btnClearSearch" class="btn-clear-search" title="Suche leeren" style="display: none;">&times;</button>
-              </div>
-            </div>
-          </div>
+    <!-- Schritt 3: Analyse-Dashboard & Korrekturen -->
+    <section id="results-section" class="results-container hidden">
+      
+      <!-- Kennzahlen / Statistik -->
+      <div class="stats-grid">
+        <div class="stat-card stat-total">
+          <div class="stat-num" id="stat-total">0</div>
+          <div class="stat-label">Geprüfte Zellen</div>
         </div>
-
-        <!-- KPI / Metrics Grid -->
-        <div class="kpi-grid">
-          <!-- KPI 1: Dynamische Summenanzeige Spalte D (Stunden/Mengen) -->
-          <div class="kpi-card highlight">
-            <div class="kpi-icon-wrapper">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"></circle>
-                <polyline points="12 6 12 12 16 14"></polyline>
-              </svg>
-            </div>
-            <div class="kpi-body">
-              <span class="kpi-label">Summe Stunden / Mengen (Spalte D)</span>
-              <span class="kpi-value" id="kpiSumStunden">0,00</span>
-              <span class="kpi-subtext" id="kpiSumStundenUnit">gefilterte Gesamtmenge</span>
-            </div>
-          </div>
-
-          <!-- KPI 2: Anzahl Datensätze -->
-          <div class="kpi-card">
-            <div class="kpi-icon-wrapper">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-              </svg>
-            </div>
-            <div class="kpi-body">
-              <span class="kpi-label">Gefilterte Einträge</span>
-              <span class="kpi-value" id="kpiFilteredCount">0</span>
-              <span class="kpi-subtext" id="kpiTotalRatio">von 0 Gesamteinträgen</span>
-            </div>
-          </div>
-
-          <!-- KPI 3: Summe Preis (Spalte G) -->
-          <div class="kpi-card">
-            <div class="kpi-icon-wrapper">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="12" y1="1" x2="12" y2="23"></line>
-                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-              </svg>
-            </div>
-            <div class="kpi-body">
-              <span class="kpi-label">Gesamtsumme Preis (Spalte G)</span>
-              <span class="kpi-value" id="kpiSumPreis">0,00 €</span>
-              <span class="kpi-subtext">Summe gefilterter Beträge</span>
-            </div>
-          </div>
+        <div class="stat-card stat-ok">
+          <div class="stat-num" id="stat-ok">0</div>
+          <div class="stat-label">Gültig / Korrekt</div>
         </div>
-
-        <!-- Detail Table Card -->
-        <div class="table-card card">
-          <div class="table-toolbar no-print">
-            <div class="toolbar-title">
-              <h3>Ergebnisliste Tagesberichte</h3>
-              <span class="text-muted" id="tableResultCount">(0 Einträge)</span>
-            </div>
-            <div class="toolbar-actions">
-              <button id="btnExportDetailExcel" class="btn btn-sm btn-outline" title="Gefilterte Ansicht als Excel-Datei herunterladen">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                  <polyline points="7 10 12 15 17 10"></polyline>
-                  <line x1="12" y1="15" x2="12" y2="3"></line>
-                </svg>
-                Excel-Export
-              </button>
-            </div>
-          </div>
-
-          <div class="table-responsive">
-            <table class="data-table" id="detailTable">
-              <thead>
-                <tr>
-                  <th data-sort="date" class="sortable">Datum <span class="sort-icon"></span></th>
-                  <th data-sort="order" class="sortable">Auftragsnr. <span class="sort-icon"></span></th>
-                  <th data-sort="ort" class="sortable">Ort / Baustelle <span class="sort-icon"></span></th>
-                  <th data-sort="name" class="sortable">Name (Ressource) <span class="sort-icon"></span></th>
-                  <th data-sort="category" class="sortable">Kategorie <span class="sort-icon"></span></th>
-                  <th data-sort="hours" class="sortable text-right">Stunden / Mengen <span class="sort-icon"></span></th>
-                  <th data-sort="service" class="sortable">Leistung <span class="sort-icon"></span></th>
-                  <th>Beschreibung</th>
-                  <th data-sort="price" class="sortable text-right">Preis <span class="sort-icon"></span></th>
-                  <th class="text-center" style="width: 105px;">Aktionen</th>
-                </tr>
-              </thead>
-              <tbody id="detailTableBody">
-                <tr class="empty-row">
-                  <td colspan="10">
-                    <div class="empty-state">
-                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="12" y1="8" x2="12" y2="12"></line>
-                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                      </svg>
-                      <p>Bitte lade die Bewegungsdaten hoch oder nutze <strong>Demo-Daten laden</strong>.</p>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-              <tfoot id="detailTableFoot" style="display: none;">
-                <tr class="summary-row">
-                  <td colspan="5" class="text-right font-bold">Summe gefiltert:</td>
-                  <td class="text-right font-bold highlight-cell" id="footSumStunden">0,00</td>
-                  <td colspan="2"></td>
-                  <td class="text-right font-bold" id="footSumPreis">0,00 €</td>
-                  <td></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+        <div class="stat-card stat-zahlendreher">
+          <div class="stat-num" id="stat-zahlendreher">0</div>
+          <div class="stat-label">Zahlendreher</div>
+        </div>
+        <div class="stat-card stat-tippfehler">
+          <div class="stat-num" id="stat-tippfehler">0</div>
+          <div class="stat-label">Tippfehler / Ähnlich</div>
+        </div>
+        <div class="stat-card stat-fehler">
+          <div class="stat-num" id="stat-fehler">0</div>
+          <div class="stat-label">Nicht existent / Leer</div>
         </div>
       </div>
 
-      <!-- ==================== TAB 2: WOCHENÜBERSICHT (PERSONAL) ==================== -->
-      <div id="tabWoche" class="tab-content">
-        <!-- Control Bar (Screen only) -->
-        <div class="woche-control-card card no-print">
-          <div class="woche-control-flex">
-            <div class="woche-selector-group">
-              <label for="selectKalenderwoche"><strong>Kalenderwoche auswählen:</strong></label>
-              <select id="selectKalenderwoche" class="input-control select-kw">
-                <option value="">-- Keine Daten verfügbar --</option>
-              </select>
-            </div>
+      <!-- Aktionsleiste für Korrekturen -->
+      <div class="action-bar-card">
+        <div class="action-bar-left">
+          <button id="btn-general-apply" class="btn btn-general btn-pulse" title="Erstellt die fertige Excel-Datei im Download-Ordner. Fehler und nicht vorhandene Nummern bleiben im Original unverändert erhalten, es sei denn, Sie haben sie manuell angepasst.">
+            <span class="icon">💾</span> <strong>General-Button: Datei erstellen &amp; Änderungen speichern</strong>
+          </button>
+          <button id="btn-open-insert-row-actionbar" class="btn btn-action btn-outline" style="border-color: #0284c7; color: #0284c7;" title="Fehlende Zeile / Buchung in die Prüfdatei nachtragen">
+            <span class="icon">➕</span> Zeile nachtragen
+          </button>
+          <button id="btn-reset-fixes" class="btn btn-action btn-secondary" title="Alle Korrekturen rückgängig machen">
+            <span class="icon">↩️</span> Zurücksetzen
+          </button>
+        </div>
+        <div class="action-bar-right">
+          <button id="btn-export-excel" class="btn btn-success hidden">
+            <span class="icon">💾</span> Korrigierte Excel (.xlsx)
+          </button>
+          <button id="btn-export-report" class="btn btn-outline hidden">
+            <span class="icon">📊</span> Prüfbericht (.xlsx)
+          </button>
+        </div>
+      </div>
 
-            <div class="woche-actions-group">
-              <button id="btnOpenManualEntry" class="btn btn-secondary" title="Arbeitszeit nachbuchen, Krankheit, Urlaub oder Überstundenabbau erfassen">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 5v14M5 12h14"></path>
-                </svg>
-                + Arbeitszeit / Abwesenheit erfassen
-              </button>
+      <!-- Download-Erfolgsbanner (erscheint nach General-Button) -->
+      <div id="download-success-banner" class="download-banner hidden">
+        <div class="download-banner-left">
+          <div class="download-banner-badge">✅ DATEI HERUNTERGELADEN</div>
+          <h4>Korrigierte Excel-Datei erfolgreich erstellt (1:1 Original-Layout)</h4>
+          <p class="download-banner-path">Gespeichert in Ihrem Browser-Download-Ordner als: <strong id="download-file-name">dateiname_KORRIGIERT.xlsx</strong></p>
+        </div>
+        <div class="download-banner-actions">
+          <button id="btn-download-again" class="btn btn-success">
+            <span class="icon">📥</span> Nochmals herunterladen
+          </button>
+        </div>
+      </div>
 
-              <button id="btnPrintWochenbericht" class="btn btn-primary" title="Wochenbericht ausdrucken oder als PDF sichern">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="6 9 6 2 18 2 18 9"></polyline>
-                  <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
-                  <rect x="6" y="14" width="12" height="8"></rect>
-                </svg>
-                Als PDF speichern / Drucken
-              </button>
-            </div>
-          </div>
-
-          <!-- Filter & Suche für die Wochenübersicht (Screen only) -->
-          <div class="woche-filter-row" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-color, #e2e8f0);">
-            <label class="filter-checkbox-label" style="display: inline-flex; align-items: center; gap: 8px; font-size: 0.88rem; cursor: pointer; user-select: none; font-weight: 500; color: #1e293b;">
-              <input type="checkbox" id="chkShowAllEmployees" checked style="width: 16px; height: 16px; cursor: pointer;">
-              <span>Alle Mitarbeiter aus Stammdaten anzeigen <span style="font-weight: normal; color: #64748b;">(auch ohne Buchungen in dieser KW)</span></span>
-            </label>
-            <div style="position: relative; max-width: 280px; width: 100%;">
-              <input type="text" id="wocheSearchInput" class="input-control" placeholder="Mitarbeiter suchen (Name, Nr.)..." style="padding-left: 32px; height: 36px; font-size: 0.85rem; width: 100%;">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="position: absolute; left: 10px; top: 11px; color: #94a3b8; pointer-events: none;">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
-            </div>
-          </div>
+      <!-- Filter und Tabellenansicht (Prüfdiagnose ODER Komplette Excel-Datei) -->
+      <div class="card table-card">
+        <!-- Ansichten-Umschalter (Tabs) -->
+        <div class="view-tabs-bar">
+          <button type="button" id="tab-btn-diagnostics" class="view-tab-btn active">
+            <span class="icon">🔍</span> <span>Prüf- &amp; Diagnoseansicht</span>
+            <span class="tab-badge badge-err" id="tab-badge-errors">0 Abweichungen</span>
+          </button>
+          <button type="button" id="tab-btn-fulltable" class="view-tab-btn">
+            <span class="icon">📑</span> <span>Gesamte Excel-Datei (Alle Spalten &amp; Zeilen)</span>
+            <span class="tab-badge badge-info" id="tab-badge-total-rows">0 Zeilen</span>
+          </button>
         </div>
 
-        <!-- KPI Mini Bar (Screen only) -->
-        <div class="woche-kpi-bar no-print">
-          <div class="woche-kpi-item">
-            <span class="label">Aktive Mitarbeiter:</span>
-            <span class="value" id="kpiWocheMitarbeiterCount">0</span>
-          </div>
-          <div class="woche-kpi-item">
-            <span class="label">Reine Arbeitszeit der Woche:</span>
-            <span class="value highlight-text" id="kpiWocheGesamtStunden">0,00 Std.</span>
-          </div>
-          <div class="woche-kpi-item" id="kpiWocheOvertimeItem">
-            <span class="label">Überstunden der Woche:</span>
-            <span class="value" id="kpiWocheOvertimeStunden" style="color: #b45309;">0,00 Std.</span>
-          </div>
-          <div class="woche-kpi-item">
-            <span class="label">Schnitt Arbeitszeit / MA:</span>
-            <span class="value" id="kpiWocheSchnittStunden">0,00 Std.</span>
-          </div>
-          <div class="woche-kpi-item" id="kpiWocheSonderzeitenItem">
-            <span class="label">Sonderzeiten (Krank/Url/ÜA):</span>
-            <span class="value" id="kpiWocheSonderstunden">0,00 Std.</span>
-          </div>
-          <div class="woche-kpi-item" id="kpiWocheMissingItem">
-            <span class="label">Fehlzeiten-Klärbedarf:</span>
-            <span class="value" id="kpiWocheMissingCount" style="color: #059669; font-size: 1.15rem;">0 Tage</span>
-          </div>
-        </div>
-
-        <!-- ==================== INTERAKTIVE KLÄRUNGS-ZENTRALE (STUNDENKONTROLLE) ==================== -->
-        <div class="klaerung-box no-print" id="wocheKlaerungBox">
-          <div class="klaerung-header">
-            <div class="klaerung-title">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                <line x1="12" y1="9" x2="12" y2="13"></line>
-                <line x1="12" y1="17" x2="12.01" y2="17"></line>
-              </svg>
-              <span>Stundenkontrolle &amp; Fehlzeiten-Prüfung</span>
+        <!-- Ansicht 1: Prüf- & Diagnoseansicht (bisherige Ergebnistabelle) -->
+        <div id="view-diagnostics" class="view-pane">
+          <div class="table-header-toolbar">
+            <div class="search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="table-search-input" placeholder="Nach Zelle (z.B. A5), Wert oder Diagnose filtern...">
             </div>
-            <span class="klaerung-badge" id="klaerungStatusBadge">Prüfe Daten...</span>
-          </div>
-          <div id="klaerungContent">
-            <!-- Dynamisch befüllt in app.js -->
-          </div>
-        </div>
 
-        <!-- ==================== DRUCK-DOKUMENT CONTAINER ==================== -->
-        <div class="print-document card" id="printReportDocument">
-
-          <!-- Briefkopf / Header -->
-          <div class="print-header">
-            <div class="print-header-top">
-              <div class="print-company-info">
-                <h2 class="print-main-title">WOCHENBERICHT &amp; STUNDENNACHWEIS</h2>
-                <div class="print-kw-highlight" id="printHeaderKwTitle">Kalenderwoche: --</div>
-              </div>
-              <div class="print-meta-box">
-                <div><strong>Zeitraum:</strong> <span id="printHeaderDateRange">--</span></div>
-                <div><strong>Erstellt am:</strong> <span id="printHeaderGeneratedAt">--</span></div>
-                <div><strong>Kategorie:</strong> Personal / Mitarbeiter</div>
-              </div>
+            <div class="filter-pills" id="filter-pills">
+              <button class="pill" data-filter="all">Alle (<span id="count-all">0</span>)</button>
+              <button class="pill active" data-filter="errors">Nur Fehler (<span id="count-errors">0</span>)</button>
+              <button class="pill" data-filter="zahlendreher">Zahlendreher (<span id="count-zd">0</span>)</button>
+              <button class="pill" data-filter="tippfehler">Tippfehler (<span id="count-tp">0</span>)</button>
+              <button class="pill pill-datum" data-filter="datum">📅 Datum (<span id="count-datum">0</span>)</button>
+              <button class="pill" data-filter="nicht_existent">Nicht existent (<span id="count-ne">0</span>)</button>
+              <button class="pill" data-filter="corrected">Bereits korrigiert (<span id="count-corr">0</span>)</button>
             </div>
-            <div class="print-header-divider"></div>
           </div>
 
-          <!-- ==================== TABELLE 1: TÄGLICHE STUNDENERFASSUNG (Mo - So) ==================== -->
-          <div class="section-title-wrap">
-            <h3 class="section-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="no-print">
-                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-                <line x1="16" y1="2" x2="16" y2="6"></line>
-                <line x1="8" y1="2" x2="8" y2="6"></line>
-                <line x1="3" y1="10" x2="21" y2="10"></line>
-              </svg>
-              Tägliche Stundenerfassung nach Wochentagen (Mo – So)
-            </h3>
-            <span class="section-badge no-print" title="Klicke auf eine Zelle, um Arbeitszeit nachzubuchen oder Krank/Urlaub/Überstunden einzutragen">
-              💡 Tipp: Klick auf Zelle = Arbeitszeit / Abwesenheit erfassen
-            </span>
-          </div>
-
-          <div class="table-responsive matrix-wrap">
-            <table class="data-table print-table matrix-table" id="wochenTagesMatrixTable">
+          <div class="results-table-wrapper">
+            <table class="results-table">
               <thead>
                 <tr>
-                  <th style="width: 100px;">Mitarbeiternr.</th>
-                  <th style="min-width: 170px;">Mitarbeiter-Name</th>
-                  <th id="thDay0" class="text-right day-th">Mo<br><span class="day-sub">--</span></th>
-                  <th id="thDay1" class="text-right day-th">Di<br><span class="day-sub">--</span></th>
-                  <th id="thDay2" class="text-right day-th">Mi<br><span class="day-sub">--</span></th>
-                  <th id="thDay3" class="text-right day-th">Do<br><span class="day-sub">--</span></th>
-                  <th id="thDay4" class="text-right day-th">Fr<br><span class="day-sub">--</span></th>
-                  <th id="thDay5" class="text-right day-th weekend-th">Sa<br><span class="day-sub">--</span></th>
-                  <th id="thDay6" class="text-right day-th weekend-th">So<br><span class="day-sub">--</span></th>
-                  <th class="text-right total-th" style="width: 130px;">Arbeitszeit (KW)</th>
+                  <th width="75">Zelle</th>
+                  <th width="150">Spalte</th>
+                  <th width="90">Zeile</th>
+                  <th width="130">Originalwert</th>
+                  <th width="200">Status / Diagnose</th>
+                  <th width="220">Vorschlag / Alternativen</th>
+                  <th width="210">Neuer Wert (Manuell / Speichern)</th>
                 </tr>
               </thead>
-              <tbody id="wochenTagesMatrixBody">
-                <tr class="empty-row">
-                  <td colspan="10">
-                    <div class="empty-state">
-                      <p>Keine Einträge für diese Kalenderwoche vorhanden.</p>
-                    </div>
-                  </td>
-                </tr>
+              <tbody id="results-tbody">
+                <!-- Dynamisch gefüllt -->
               </tbody>
-              <tfoot>
-                <tr class="matrix-summary-row">
-                  <td colspan="2" class="font-bold text-right">Tagessumme Arbeitszeit:</td>
-                  <td id="matrixSumDay0" class="text-right font-bold">0,00</td>
-                  <td id="matrixSumDay1" class="text-right font-bold">0,00</td>
-                  <td id="matrixSumDay2" class="text-right font-bold">0,00</td>
-                  <td id="matrixSumDay3" class="text-right font-bold">0,00</td>
-                  <td id="matrixSumDay4" class="text-right font-bold">0,00</td>
-                  <td id="matrixSumDay5" class="text-right font-bold">0,00</td>
-                  <td id="matrixSumDay6" class="text-right font-bold">0,00</td>
-                  <td id="matrixSumTotal" class="text-right font-bold highlight-cell">0,00 Std.</td>
-                </tr>
-              </tfoot>
             </table>
           </div>
+        </div>
 
-          <!-- ==================== TABELLE 2: KOMPAKTE ZUSAMMENFASSUNG ==================== -->
-          <div class="section-title-wrap" style="margin-top: 2rem;">
-            <h3 class="section-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="no-print">
-                <polyline points="9 11 12 14 22 4"></polyline>
-                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
-              </svg>
-              Kompakte Wochensumme pro Mitarbeiter
-            </h3>
+        <!-- Ansicht 2: Gesamte Excel-Datei (Alle Spalten & Zeilen mit Filtern und Direkt-Bearbeitung) -->
+        <div id="view-fulltable" class="view-pane hidden">
+          <div class="fulltable-toolbar">
+            <div class="fulltable-filters-grid">
+              <div class="fulltable-filter-item">
+                <label for="filter-full-staff">👤 Mitarbeiter / Ressource:</label>
+                <select id="filter-full-staff" class="form-select form-select-sm">
+                  <option value="all">Alle Mitarbeiter</option>
+                </select>
+              </div>
+
+              <div class="fulltable-filter-item">
+                <label for="filter-full-date">📅 Datum / Tag:</label>
+                <select id="filter-full-date" class="form-select form-select-sm">
+                  <option value="all">Alle Tage</option>
+                </select>
+              </div>
+
+              <div class="fulltable-filter-item">
+                <label for="filter-full-status">⚠️ Zeilen-Status:</label>
+                <select id="filter-full-status" class="form-select form-select-sm">
+                  <option value="all">Alle Zeilen anzeigen</option>
+                  <option value="errors">Nur Zeilen mit Prüffehlern</option>
+                  <option value="corrected">Nur geänderte Zeilen</option>
+                </select>
+              </div>
+
+              <div class="fulltable-filter-item fulltable-search-item">
+                <label for="filter-full-search">🔍 Freitext-Suche:</label>
+                <input type="text" id="filter-full-search" class="form-input form-input-sm" placeholder="In allen Zellen suchen (z.B. Stunden, Artikel, Name)...">
+              </div>
+            </div>
+
+            <div class="fulltable-actions-row">
+              <div class="fulltable-counts" id="fulltable-counts-text">
+                Zeige <strong>0</strong> von <strong>0</strong> Zeilen
+              </div>
+              <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                <button type="button" id="btn-open-insert-row-fulltable" class="btn btn-primary btn-sm" style="background: #0284c7;">
+                  <span class="icon">➕</span> Zeile nachtragen
+                </button>
+                <button type="button" id="btn-reset-full-filters" class="btn btn-secondary btn-sm">
+                  ↩️ Filter zurücksetzen
+                </button>
+                <span class="fulltable-hint">💡 Klick auf ➕ bei einer Zeile zum Kopieren/Einfügen, oder Klick auf Zelle zum Bearbeiten</span>
+              </div>
+            </div>
           </div>
 
-          <div class="table-responsive">
-            <table class="data-table print-table" id="wochenTable">
-              <thead>
-                <tr>
-                  <th style="width: 45px;" class="text-center">Pos.</th>
-                  <th style="min-width: 160px;">Mitarbeiter-Name</th>
-                  <th style="width: 110px;">Personalnr.</th>
-                  <th style="width: 95px;" class="text-center screen-only-col">Arbeitstage</th>
-                  <th>Aufschlüsselung Sonderzeiten (Krankheit, Urlaub, Überstundenabbau etc.)</th>
-                  <th style="width: 120px;" class="text-right">Sonderzeiten</th>
-                  <th style="width: 135px;" class="text-right">Reine Arbeitszeit</th>
-                  <th style="width: 125px;" class="text-right" style="color: #b45309;">Überstunden</th>
-                  <th style="width: 125px;" class="text-right">Gesamtstunden</th>
-                </tr>
+          <div class="fulltable-scroll-wrapper">
+            <table class="full-excel-table" id="full-excel-table">
+              <thead id="fulltable-thead">
+                <!-- Dynamisch: # Zeile | Spalte A | Spalte B | ... -->
               </thead>
-              <tbody id="wochenTableBody">
-                <tr class="empty-row">
-                  <td colspan="9">
-                    <div class="empty-state">
-                      <p>Keine Einträge für Mitarbeiter in dieser Kalenderwoche vorhanden.</p>
-                    </div>
-                  </td>
-                </tr>
+              <tbody id="fulltable-tbody">
+                <!-- Dynamisch alle Zeilen mit Inline-Editing -->
               </tbody>
-              <tfoot>
-                <tr class="print-summary-row">
-                  <td colspan="3" class="text-right font-bold">Wochensummen (Personal):</td>
-                  <td class="text-center screen-only-col font-bold" id="wochenFootTageSum">--</td>
-                  <td></td>
-                  <td class="text-right font-bold" id="wochenFootSonderSum" style="color: #64748b;">0,00 Std.</td>
-                  <td class="text-right font-bold" id="wochenFootStundenSum" style="color: #1e3a8a;">0,00 Std.</td>
-                  <td class="text-right font-bold" id="wochenFootOvertimeSum" style="color: #b45309;">0,00 Std.</td>
-                  <td class="text-right font-bold highlight-cell" id="wochenFootGesamtSum">0,00 Std.</td>
-                </tr>
-              </tfoot>
             </table>
           </div>
+        </div>
 
-          <!-- Legende & Hinweise für den Ausdruck -->
-          <div class="print-notes-section">
-            <p class="print-note-text">
-              * <strong>Hinweis zur Tagessumme:</strong> In der Tagessumme wird <strong>ausschließlich die tatsächliche Arbeitszeit</strong> summiert. Urlaub, Krankheit und Überstundenabbau sind in den Tageszellen separat vermerkt.<br>
-              * <strong>Soll-Arbeitszeit &amp; Überstunden:</strong> Mo–Do 8,0 Std. / Fr 7,0 Std. (39,0 Std./Woche). Mehrarbeit über Soll sowie Samstage/Sonntage gelten als Überstunden.<br>
-              * <strong>Legende:</strong> <span class="badge-absence badge-overtime">[ÜSt] = Überstunden</span> &nbsp;|&nbsp;
-              <span class="badge-absence badge-arbeit">[AZ] = Nachgebuchte Arbeitszeit</span> &nbsp;|&nbsp;
-              <span class="badge-absence badge-krank">[K] = Krank</span> &nbsp;|&nbsp; 
-              <span class="badge-absence badge-urlaub">[U] = Urlaub</span> &nbsp;|&nbsp; 
-              <span class="badge-absence badge-ueberstunden">[ÜA] = Überstundenabbau / Gleitzeit</span> &nbsp;|&nbsp;
-              <span class="badge-absence badge-schulung">[S] = Schulung</span>.
+      </div>
+
+      <!-- Schritt 4: Übersicht der Mitarbeiter & geleisteten Arbeitszeiten nach Tagen -->
+      <div id="timesheet-section" class="card timesheet-card hidden">
+        <div class="card-header-flex">
+          <div>
+            <div class="title-with-badge">
+              <span class="step-badge" style="background: #059669;">4</span>
+              <h3>Übersicht: Mitarbeiter &amp; geleistete Arbeitszeiten nach Tagen</h3>
+            </div>
+            <p class="section-desc" style="font-size: 0.88rem; color: var(--text-muted); margin-top: 0.25rem;">
+              Automatische Zusammenstellung der gebuchten Zeiten pro Mitarbeiter und Kalendertag zur Endkontrolle, ob alle Daten korrekt erfasst wurden.
             </p>
           </div>
-
-          <!-- Unterschriftenfeld für Vorarbeiter / Bauleiter am Ende der Seite -->
-          <div class="print-signature-section">
-            <div class="signature-box">
-              <div class="sig-line"></div>
-              <div class="sig-label">Datum / Ort</div>
-            </div>
-            <div class="signature-box">
-              <div class="sig-line"></div>
-              <div class="sig-label">Unterschrift Vorarbeiter / Polier</div>
-            </div>
-            <div class="signature-box">
-              <div class="sig-line"></div>
-              <div class="sig-label">Geprüft &amp; Freigegeben (Bauleitung)</div>
-            </div>
+          <div class="timesheet-header-actions" style="display: flex; gap: 0.5rem; align-items: center;">
+            <button type="button" id="btn-open-insert-row-timesheet" class="btn btn-primary btn-sm" style="background: #0284c7; border-color: #0284c7;" title="Fehlende Zeile / Buchung für einen Mitarbeiter in die Prüfdatei nachtragen">
+              <span class="icon">➕</span> Zeile nachtragen
+            </button>
+            <button id="btn-export-timesheet" class="btn btn-success btn-sm" title="Lädt diese Arbeitszeiten-Matrix als formatierte Excel-Datei herunter">
+              <span class="icon">📥</span> Arbeitszeiten als Excel (.xlsx)
+            </button>
           </div>
+        </div>
 
+        <!-- Spalten-Auswahl für Datum & Stunden (automatisch erkannt, flexibel änderbar) -->
+        <div class="timesheet-config-bar">
+          <div class="timesheet-cfg-item">
+            <label for="select-ts-date-col">📅 Datums-Spalte:</label>
+            <select id="select-ts-date-col" class="form-select form-select-sm"></select>
+          </div>
+          <div class="timesheet-cfg-item">
+            <label for="select-ts-hours-col">⏱️ Arbeitszeit / Stunden-Spalte:</label>
+            <select id="select-ts-hours-col" class="form-select form-select-sm"></select>
+          </div>
+          <div class="timesheet-cfg-item">
+            <label for="select-ts-resource-col">👤 Ressourcen-Spalte:</label>
+            <select id="select-ts-resource-col" class="form-select form-select-sm"></select>
+          </div>
+          <div class="timesheet-cfg-item" style="display: flex; align-items: center; gap: 0.5rem; padding-top: 1.25rem;">
+            <input type="checkbox" id="chk-ts-only-staff" class="form-check-input" checked style="cursor: pointer; width: 1.15rem; height: 1.15rem;">
+            <label for="chk-ts-only-staff" style="cursor: pointer; font-weight: 600; font-size: 0.85rem; margin: 0; user-select: none;">
+              👷 Nur Mitarbeiter (Arbeiter) anzeigen
+            </label>
+          </div>
+          <div class="timesheet-cfg-info">
+            <span id="ts-staff-status-badge" class="badge badge-ok">👤 Mitarbeiter verknüpft</span>
+          </div>
+        </div>
+
+        <!-- Matrix-Tabelle -->
+        <div class="timesheet-table-wrapper">
+          <table class="timesheet-table" id="timesheet-table">
+            <thead id="timesheet-thead">
+              <!-- Dynamisch: Mitarbeiter | Tag 1 | Tag 2 | ... | Gesamtstunden | Buchungen -->
+            </thead>
+            <tbody id="timesheet-tbody">
+              <!-- Dynamisch: Eine Zeile pro Mitarbeiter -->
+            </tbody>
+            <tfoot id="timesheet-tfoot">
+              <!-- Dynamisch: Summe pro Tag über alle Mitarbeiter -->
+            </tfoot>
+          </table>
         </div>
       </div>
 
-    </div>
+    </section>
+
   </main>
 
-  <!-- ==================== MODAL: MANUELLE EINGABE (KRANK / URLAUB / ÜBERSTUNDEN) ==================== -->
-  <div class="modal-backdrop" id="modalManualEntry" style="display: none;">
-    <div class="modal-dialog" style="max-width: 520px;">
+  <!-- Modal: Zeile nachtragen (Neu anlegen) ODER Zeile bearbeiten -->
+  <div id="modal-insert-row" class="modal-backdrop hidden">
+    <div class="modal-dialog">
       <div class="modal-header">
-        <div class="modal-title">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 5v14M5 12h14"></path>
-          </svg>
-          <h3 id="modalManualTitle">Arbeitszeit / Abwesenheit erfassen</h3>
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span id="modal-icon" style="font-size: 1.4rem;">➕</span>
+          <div>
+            <h3 id="modal-title" class="modal-title">Zeile in Prüfdatei nachtragen</h3>
+            <p id="modal-desc" style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">Fügt eine fehlende Zeile mit korrekter Formatierung an die richtige Stelle der Datei ein.</p>
+          </div>
         </div>
-        <button class="modal-close" id="btnCloseManualModal">&times;</button>
+        <button type="button" id="btn-close-insert-modal" class="modal-close-btn" title="Schließen">&times;</button>
       </div>
 
       <div class="modal-body">
-        <input type="hidden" id="manualEditId" value="">
-        <div id="manualContextBanner" style="display: none; padding: 0.65rem 0.85rem; border-radius: 6px; font-size: 0.82rem; margin-bottom: 0.85rem; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;"></div>
-
-        <!-- Info-Box: Bisher erfasste Arbeitszeit & Schnellkorrektur (Zuviel erfasste Stunden abziehen) -->
-        <div id="manualRecordedBox" style="display: none; padding: 0.65rem 0.85rem; border-radius: 6px; font-size: 0.82rem; margin-bottom: 0.85rem; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;">
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
-            <div>Bisher erfasste Arbeitszeit am <span id="lblRecordedDate" style="font-weight: 700;">--</span>: <strong id="lblCurrentWorkHours" style="font-size: 0.95rem; color: #0f172a;">0,0 Std.</strong></div>
-            <div id="lblCurrentTargetDiff" style="font-size: 0.78rem; font-weight: 700;"></div>
-          </div>
-          <div id="quickCorrectionRow" style="display: none; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed #cbd5e1;">
-            <div style="font-size: 0.75rem; color: #475569; margin-bottom: 0.35rem; font-weight: 600;">⚡ Schnellkorrektur (Zuviel gebuchte Arbeitszeit abziehen):</div>
-            <div class="quick-korrektur-buttons" id="quickCorrectionButtons"></div>
-          </div>
+        
+        <!-- Bearbeitungs-Hinweis (nur im Edit-Modus aktiv) -->
+        <div id="modal-edit-banner" class="hidden" style="margin-bottom: 0.85rem; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 0.65rem 0.9rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
+          <span style="font-size: 0.85rem; color: #92400e;">✏️ <strong>Bestehende Zeile bearbeiten:</strong> Sie ändern direkt den Datensatz in <strong id="modal-edit-row-num">Zeile 1</strong>.</span>
+          <button type="button" id="btn-switch-to-insert" class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 3px 8px;">➕ Stattdessen neue Zeile nachtragen</button>
         </div>
 
-        <div class="form-group" style="margin-bottom: 0.85rem;">
-          <label for="manualSelectMitarbeiter" style="display:block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem;">Mitarbeiter:</label>
-          <select id="manualSelectMitarbeiter" class="input-control">
-            <option value="">-- Mitarbeiter wählen --</option>
-          </select>
-        </div>
+        <!-- Bereiche nur für Neu-Einfügen (im Edit-Modus ausgeblendet) -->
+        <div id="modal-insert-only-sections">
+          <!-- Bereich 1: Positionierung -->
+          <div class="modal-section">
+            <div class="modal-section-title">
+              <span>📍</span> <strong>Einfüge-Position in der Datei festlegen</strong>
+            </div>
 
-        <div class="form-row-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; margin-bottom: 0.85rem;">
-          <div class="form-group">
-            <label for="manualDateInput" style="display:block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem;">Datum:</label>
-            <input type="date" id="manualDateInput" class="input-control">
+            <div class="insert-pos-modes">
+              <label class="radio-chip">
+                <input type="radio" name="insert-pos-mode" value="auto" checked>
+                <span>🧭 Automatisch passend einsortieren (nach Datum &amp; Mitarbeiter)</span>
+              </label>
+              <label class="radio-chip">
+                <input type="radio" name="insert-pos-mode" value="after_row">
+                <span>🎯 Direkt nach einer bestimmten Zeile einfügen</span>
+              </label>
+              <label class="radio-chip">
+                <input type="radio" name="insert-pos-mode" value="end">
+                <span>⬇️ Am Dateiende anhängen</span>
+              </label>
+            </div>
+
+            <!-- Selektor für Modus "after_row" -->
+            <div id="insert-after-row-container" class="insert-after-row-box hidden" style="margin-top: 0.75rem;">
+              <div style="display: flex; gap: 0.5rem; margin-bottom: 0.4rem; align-items: center;">
+                <input type="text" id="insert-row-search" class="form-input form-input-sm" placeholder="🔍 Nach Zeile, Datum, Auftrag oder Mitarbeiter filtern..." style="flex: 1;">
+                <span id="insert-row-match-count" style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;"></span>
+              </div>
+              <select id="insert-target-row-select" class="form-select form-select-sm" size="5" style="width: 100%; height: 110px; font-family: monospace; font-size: 0.82rem;"></select>
+              <p style="font-size: 0.78rem; color: var(--text-muted); margin-top: 4px;">
+                💡 Die neue Zeile wird direkt unter die hier gewählte Zeile eingefügt.
+              </p>
+            </div>
+
+            <div id="insert-auto-hint" style="font-size: 0.8rem; color: #0284c7; margin-top: 0.5rem; background: #f0f9ff; padding: 6px 10px; border-radius: 4px; border: 1px solid #bae6fd;">
+              ℹ️ <strong>Auto-Modus:</strong> Das System sucht automatisch die richtige Stelle (passend zu Datum und Mitarbeiter) und fügt die Zeile sauber chronologisch ein.
+            </div>
           </div>
-          <div class="form-group">
-            <label for="manualTypeSelect" style="display:block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem;">Art des Eintrags:</label>
-            <select id="manualTypeSelect" class="input-control">
-              <option value="Arbeitszeit" selected>Reguläre Arbeitszeit (Nachbuchung)</option>
-              <option value="Arbeitszeit-Abzug">Arbeitszeit-Korrektur (Zuviel gebuchte Stunden abziehen)</option>
-              <option value="Krank">Krankheit / AU</option>
-              <option value="Urlaub">Urlaub</option>
-              <option value="Überstundenabbau">Überstundenabbau</option>
-              <option value="Schulung">Schulung / Lehrgang</option>
-              <option value="Sonstiges">Sonstiges</option>
+
+          <!-- Bereich 2: Vorlage kopieren (optional) -->
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; background: #ffffff; padding: 0.65rem 0.85rem; border: 1px dashed var(--border); border-radius: var(--radius-sm); flex-wrap: wrap; margin-bottom: 1rem;">
+            <span style="font-size: 0.82rem; color: var(--text-muted);">📋 Optional: Werte aus bestehender Zeile als Vorlage übernehmen:</span>
+            <select id="insert-template-row-select" class="form-select form-select-sm" style="max-width: 320px;">
+              <option value="">-- Leere Zeile ausfüllen --</option>
             </select>
           </div>
         </div>
 
-        <div class="form-group" style="margin-bottom: 0.85rem;">
-          <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.3rem;">
-            <label for="manualHoursInput" id="lblManualHoursTitle" style="font-size: 0.8rem; font-weight: 600;">
-              Stunden: <span id="hintFridayHours" style="display:none; font-size:0.75rem; color:#0369a1; font-weight:600; margin-left: 6px;">✨ Freitag: 7 Std. voreingestellt</span>
-            </label>
-            <div class="quick-hours-buttons">
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '1.0'; window.updateManualHoursCalcFeedback();">1h</button>
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '2.0'; window.updateManualHoursCalcFeedback();">2h</button>
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '4.0'; window.updateManualHoursCalcFeedback();">4h</button>
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '7.0'; window.updateManualHoursCalcFeedback();">7h (Fr)</button>
-              <button type="button" class="btn-chip" onclick="document.getElementById('manualHoursInput').value = '8.0'; window.updateManualHoursCalcFeedback();">8h (Mo-Do)</button>
-            </div>
+        <!-- Bereich 3: Spalten-Eingabefelder (für Insert & Edit genutzt) -->
+        <div class="modal-section">
+          <div class="modal-section-title">
+            <span>📝</span> <strong id="modal-fields-title">Werte der Zeile eingeben</strong>
           </div>
-          <input type="number" id="manualHoursInput" class="input-control" step="0.25" min="0.25" max="24" value="8.0" placeholder="z.B. 7.0 oder 8.0">
-          <div id="manualHoursCalcFeedback" style="display: none; font-size: 0.8rem; font-weight: 600; margin-top: 0.35rem; padding: 0.3rem 0.6rem; border-radius: 4px;"></div>
+          <div id="insert-fields-grid" class="fields-grid">
+            <!-- Dynamisch für jede Spalte der Datei generiert -->
+          </div>
         </div>
 
-        <div class="form-group" style="margin-bottom: 0.85rem;">
-          <label for="manualNoteInput" style="display:block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem;">Bemerkung / Zusatz (wird in der Zelle angezeigt):</label>
-          <input type="text" id="manualNoteInput" class="input-control" placeholder="z.B. Nachbuchung Baustelle, Arztbesuch, AU bis Freitag, 1h früher Feierabend...">
-        </div>
-
-        <div id="manualExistingInfo" style="display: none; padding: 0.6rem; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 6px; font-size: 0.8rem; color: #9f1239; margin-top: 0.5rem;">
-          Für diesen Mitarbeiter und Tag existiert bereits ein Eintrag. Du kannst ihn bearbeiten oder löschen.
-        </div>
-      </div>
-
-      <div class="modal-footer" style="display: flex; justify-content: space-between;">
-        <button type="button" class="btn btn-danger btn-sm" id="btnDeleteManualEntry" style="display: none;">Eintrag löschen</button>
-        <div style="display: flex; gap: 0.5rem; margin-left: auto;">
-          <button type="button" class="btn btn-secondary btn-sm" id="btnCancelManualModal">Abbrechen</button>
-          <button type="button" class="btn btn-primary btn-sm" id="btnSaveManualEntry">Speichern</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ==================== MODAL: STAMMDATEN-VERWALTUNG ==================== -->
-  <div class="modal-backdrop" id="modalSettings" style="display: none;">
-    <div class="modal-dialog">
-      <div class="modal-header">
-        <div class="modal-title">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-          <h3>Stammdaten, Aufträge &amp; Lokaler Speicher</h3>
-        </div>
-        <button class="modal-close" id="btnCloseSettings">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <div class="settings-meta-box">
-          <div><strong>Ressourcen im LocalStorage:</strong> <span id="modalStammStatusText">0 Ressourcen gespeichert</span></div>
-          <div><strong>Hinterlegte Aufträge mit Ort:</strong> <span id="modalAuftragStatusText">0 Aufträge</span></div>
-          <div><strong>Manuelle Buchungen (Arbeit &amp; Abwesenheiten):</strong> <span id="modalManualCountText">0 Einträge</span></div>
-          <div><strong>Zuletzt aktualisiert:</strong> <span id="modalStammUpdatedText">Nie</span></div>
-          <div><strong>Herkunftsdatei:</strong> <span id="modalStammFilenameText">--</span></div>
-        </div>
-
-        <div class="settings-actions-row">
-          <button id="btnModalUploadNew" class="btn btn-primary btn-sm">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="17 8 12 3 7 8"></polyline>
-              <line x1="12" y1="3" x2="12" y2="15"></line>
-            </svg>
-            Stammdaten neu hochladen
-          </button>
-          <button id="btnLoadDefaultStamm" class="btn btn-outline btn-sm">Muster-Stammdaten laden</button>
-          <button id="btnClearManualOnly" class="btn btn-secondary btn-sm">Manuelle Einträge leeren</button>
-          <button id="btnClearStammStorage" class="btn btn-danger btn-sm">Gesamten Speicher löschen</button>
-        </div>
-
-        <!-- 1. Ressourcen Tabelle -->
-        <h4 style="margin: 1.25rem 0 0.4rem 0; font-size: 0.95rem;">Hinterlegte Ressourcen:</h4>
-        <div class="table-responsive modal-table-wrap" style="max-height: 150px;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Ressourcennummer</th>
-                <th>Name</th>
-                <th>Kategorie</th>
-              </tr>
-            </thead>
-            <tbody id="modalStammTableBody">
-              <tr>
-                <td colspan="3" class="text-center text-muted">Keine Stammdaten gespeichert.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- 2. Aufträge & Orte Tabelle -->
-        <h4 style="margin: 1.25rem 0 0.4rem 0; font-size: 0.95rem;">Hinterlegte Aufträge &amp; Orte:</h4>
-        <div class="table-responsive modal-table-wrap" style="max-height: 150px;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th style="width: 140px;">Auftragsnummer</th>
-                <th>Baustellen-Ort</th>
-                <th style="width: 180px;">Zusatzort / Zusatznr.</th>
-              </tr>
-            </thead>
-            <tbody id="modalAuftragTableBody">
-              <tr>
-                <td colspan="3" class="text-center text-muted">Keine Aufträge mit Ort hinterlegt.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- 3. Gespeicherte manuelle Einträge Tabelle -->
-        <h4 style="margin: 1.25rem 0 0.4rem 0; font-size: 0.95rem;">Erfasste manuelle Buchungen (Arbeitszeit &amp; Abwesenheiten):</h4>
-        <div class="table-responsive modal-table-wrap" style="max-height: 150px;">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Datum</th>
-                <th>Mitarbeiter</th>
-                <th>Art</th>
-                <th class="text-right">Stunden</th>
-                <th>Bemerkung</th>
-                <th class="text-center">Aktion</th>
-              </tr>
-            </thead>
-            <tbody id="modalManualListBody">
-              <tr>
-                <td colspan="6" class="text-center text-muted">Keine Abwesenheiten eingetragen.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
       </div>
 
       <div class="modal-footer">
-        <button class="btn btn-secondary" id="btnModalCloseFooter">Schließen</button>
+        <button type="button" id="btn-cancel-insert-row" class="btn btn-secondary">Abbrechen</button>
+        <button type="button" id="btn-confirm-insert-row" class="btn btn-primary" style="background: #059669; border-color: #047857;">
+          <span class="icon" id="btn-confirm-icon">➕</span> <span id="btn-confirm-insert-text">Zeile jetzt einfügen</span>
+        </button>
       </div>
     </div>
   </div>
 
-  <!-- Toast Notification Container -->
-  <div id="toastContainer" class="toast-container no-print"></div>
+  <!-- Modal: Buchung auswählen (wenn mehrere Buchungen an einem Tag existieren) -->
+  <div id="modal-choose-booking" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 580px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span style="font-size: 1.4rem;">📋</span>
+          <div>
+            <h3 class="modal-title" id="choose-booking-title">Buchung auswählen</h3>
+            <p id="choose-booking-subtitle" style="font-size: 0.8rem; color: var(--text-muted); margin: 0;"></p>
+          </div>
+        </div>
+        <button type="button" id="btn-close-choose-modal" class="modal-close-btn" title="Schließen">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.88rem; color: #334155; margin-bottom: 0.75rem;">
+          Wählen Sie die Zeile aus, die Sie bearbeiten möchten, oder tragen Sie eine neue Buchung ein:
+        </p>
+        <div id="choose-booking-list" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 50vh; overflow-y: auto;">
+          <!-- Dynamisch generiert -->
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content: space-between;">
+        <button type="button" id="btn-choose-add-new" class="btn btn-primary btn-sm" style="background: #0284c7; border-color: #0284c7;">
+          ➕ Neue zusätzliche Zeile eintragen
+        </button>
+        <button type="button" id="btn-close-choose" class="btn btn-secondary btn-sm">Abbrechen</button>
+      </div>
+    </div>
+  </div>
 
-  <!-- App Script -->
+  <!-- Toast Benachrichtigung -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Skripte -->
+  <script src="engine.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

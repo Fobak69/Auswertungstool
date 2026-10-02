@@ -1,3118 +1,5059 @@
-/**
- * Excel-Auswertung Single-Page Web-App
- * Lokale Verarbeitung mit SheetJS (xlsx.js)
- * Tabs: 'Detail-Auswertung' & 'Wochenübersicht (Personal)'
- * Inklusive:
- *  - Auftrags-Orte Verknüpfung
- *  - Tägliche Stundenerfassung (Mo-So Matrix) mit strikt EINER Zeile pro Mitarbeiter
- *  - Manuelle Zusätze (Krank, Urlaub, Überstunden, Bemerkung) stehen direkt in der Zelle des Tages
- */
+// ==============================================================================
+// Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
+// ==============================================================================
 
-(() => {
-  'use strict';
-
-  // ==========================================================================
-  // 1. ANWENDUNGSSTATUS & KONFIGURATION
-  // ==========================================================================
-  const STORAGE_KEY_STAMMDATEN = 'excel_app_stammdaten_v2';
-  const STORAGE_KEY_MANUAL_ENTRIES = 'excel_app_manual_entries_v2';
-
-  const state = {
-    // Stammdaten: Ressourcen
-    stammdaten: [],
-    stammdatenMap: new Map(), // Key: normalized ressourcennummer -> Object
-
-    // Stammdaten: Aufträge & Orte
-    auftraege: [],
-    auftraegeMap: new Map(), // Key: normalized auftragsnummer -> Ort
-    auftragCompositeMap: new Map(), // Key: composite "463040##12", "463040-12" -> fullOrt
-    auftragVariantsMap: new Map(), // Key: "463040" -> Array<{ ort, zusatzort, fullOrt }>
-
-    stammdatenFilename: '',
-    stammdatenUpdatedAt: null,
-
-    // Manuelle Sonderzeiten (Krank, Urlaub, Überstundenabbau)
-    // Array<{ id: string, ressourcennummer: string, dateIso: string, type: string, stunden: number, note: string, createdAt: string }>
-    manualEntries: [],
-
-    // Bewegungsdaten (Tagesberichte)
-    bewegungsdaten: [],
-    bewegungsdatenFilename: '',
-
-    // Filter für Tab 1 (Detail-Auswertung)
-    filters: {
-      dateFrom: '',
-      dateTo: '',
-      category: '',
-      search: ''
-    },
-
-    // Sortierung für Tab 1
-    sort: {
-      field: 'date',
-      asc: false
-    },
-
-    // Ausgewählte Kalenderwoche für Tab 2
-    selectedKwKey: '',
-
-    // Filterung & Suche für Tab 2 (Wochenübersicht)
-    showAllEmployeesInWeekly: true,
-    weeklySearch: '',
-
-    // Aktiver Tab ('tabDetail' | 'tabWoche')
-    activeTab: 'tabDetail'
-  };
-
-  // Demo-Datensätze:
-  // Spalte A = Mitarbeiternummer, Spalte B = Name Mitarbeiter
-  // Spalte C = Auftragsnummer, Spalte D = Baustellen Ort, Spalte E = zusatzort (z. B. 463040 Spielplatz allgemein)
-  // Spalte F = Fahrzeug und Geräte-Nummer, Spalte G = Fahrzeug/Geräte Name
-  const DEMO_STAMMDATEN = [
-    // Spalte A & B: Mitarbeiter
-    { ressourcennummer: 'M001', name: 'Max Mustermann', kategorie: 'Mitarbeiter' },
-    { ressourcennummer: 'M002', name: 'Anna Schmidt', kategorie: 'Mitarbeiter' },
-    { ressourcennummer: 'M003', name: 'Lukas Weber', kategorie: 'Mitarbeiter' },
-    { ressourcennummer: 'M004', name: 'Sarah Meyer', kategorie: 'Mitarbeiter' },
-    { ressourcennummer: 'M005', name: 'Kevin Fischer', kategorie: 'Mitarbeiter' },
-    { ressourcennummer: 'M006', name: 'Tariq Al-Mansoor', kategorie: 'Mitarbeiter' },
-
-    // Spalte F & G: Fahrzeuge & Geräte
-    { ressourcennummer: 'F101', name: 'Mercedes Sprinter (B-EX 101)', kategorie: 'Fahrzeug' },
-    { ressourcennummer: 'F102', name: 'MAN Kipper 3-Achser (B-EX 202)', kategorie: 'Fahrzeug' },
-    { ressourcennummer: 'F103', name: 'VW Caddy Service (B-EX 303)', kategorie: 'Fahrzeug' },
-    { ressourcennummer: 'G201', name: 'Mobilbagger Liebherr A914', kategorie: 'Maschine' },
-    { ressourcennummer: 'G202', name: 'Minibagger Kubota KX057', kategorie: 'Maschine' },
-    { ressourcennummer: 'G203', name: 'Rüttelplatte Wacker DPU 6555', kategorie: 'Maschine' }
-  ];
-
-  const DEMO_AUFTRAEGE = [
-    // Spalte C = Auftragsnummer, Spalte D = Baustellen Ort, Spalte E = zusatzort
-    { auftragsnummer: '463040', ort: 'Spielplatz allgemein', zusatzort: '12 - Schillerpark' },
-    { auftragsnummer: '463040', ort: 'Spielplatz allgemein', zusatzort: '05 - Goetheplatz' },
-    { auftragsnummer: '463040', ort: 'Spielplatz allgemein', zusatzort: '08 - Stadtpark Süd' },
-    { auftragsnummer: 'AUF-2026-101', ort: 'Berlin-Mitte', zusatzort: 'Alexanderplatz' },
-    { auftragsnummer: 'AUF-2026-102', ort: 'Potsdam', zusatzort: 'Gewerbepark Babelsberg' },
-    { auftragsnummer: 'AUF-2026-103', ort: 'Berlin-Charlottenburg', zusatzort: 'Kurfürstendamm' },
-    { auftragsnummer: 'AUF-2026-095', ort: 'Königs Wusterhausen', zusatzort: 'Trassenbau Süd' }
-  ];
-
-  const DEMO_MANUAL_ENTRIES = [
-    {
-      id: 'demo_man_1',
-      ressourcennummer: 'M004', // Sarah Meyer
-      dateIso: '2026-09-24', // Donnerstag KW 39
-      type: 'Urlaub',
-      stunden: 8.0,
-      note: 'Erholungsurlaub',
-      createdAt: '2026-09-21T08:00:00Z'
-    },
-    {
-      id: 'demo_man_2',
-      ressourcennummer: 'M005', // Kevin Fischer
-      dateIso: '2026-09-25', // Freitag KW 39 (hat 4h gearbeitet + 2h Überstundenabbau)
-      type: 'Überstundenabbau',
-      stunden: 2.0,
-      note: '2h Gleitzeit früher',
-      createdAt: '2026-09-22T08:00:00Z'
-    },
-    {
-      id: 'demo_man_3',
-      ressourcennummer: 'M006', // Tariq Al-Mansoor
-      dateIso: '2026-09-22', // Dienstag KW 39
-      type: 'Krank',
-      stunden: 8.0,
-      note: 'AU attestiert',
-      createdAt: '2026-09-22T07:30:00Z'
-    }
-  ];
-
-  const DEMO_BEWEGUNGSDATEN_RAW = [
-    // Montag 21.09.2026 (KW 39)
-    ['2026-09-21', '463040-12', 'M001', 8.5, 'Spielplatzbau', 'Klettergerüst aufbauen Spielplatz 12 (Schillerpark)', 552.50],
-    ['2026-09-21', 'AUF-2026-101', 'G201', 7.0, 'Maschineneinsatz', 'Baggerarbeiten Baugrube', 665.00],
-    ['2026-09-21', '463040', 'M002', 8.0, 'Spielplatzbau', 'Fallschutzmatten verlegen Spielplatz 12', 480.00],
-    ['2026-09-21', '463040-05', 'M003', 8.5, 'Spielplatzbau', 'Schaukelanlage montieren Spielplatz 05', 510.00],
-    ['2026-09-21', 'AUF-2026-102', 'F101', 4.0, 'Transport', 'Werkzeug- und Materialanfuhr', 180.00],
-    ['2026-09-21', 'AUF-2026-103', 'M004', 8.0, 'Pflasterbau', 'Unterbau verdichten und abziehen', 480.00],
-    ['2026-09-21', 'AUF-2026-103', 'G203', 5.0, 'Maschineneinsatz', 'Flächenverdichtung Parkplatz', 225.00],
-
-    // Dienstag 22.09.2026
-    ['2026-09-22', 'AUF-2026-101', 'M001', 8.0, 'Erdaushub', 'Fundamentaushub Einzelfundamente', 520.00],
-    ['2026-09-22', 'AUF-2026-101', 'G201', 8.0, 'Maschineneinsatz', 'Fundamente schachten', 760.00],
-    ['2026-09-22', 'AUF-2026-101', 'M002', 8.0, 'Betonarbeiten', 'Sauberkeitsschicht einbringen', 480.00],
-    ['2026-09-22', 'AUF-2026-102', 'M003', 8.0, 'Kabeltiefbau', 'Schutzrohre DN110 verlegen', 480.00],
-    ['2026-09-22', 'AUF-2026-102', 'M005', 8.5, 'Kabeltiefbau', 'Rohrverlegung und Trassenband', 510.00],
-    ['2026-09-22', 'AUF-2026-102', 'F102', 6.0, 'Transport', 'Sandlieferung 18t verfüllen', 450.00],
-    ['2026-09-22', 'AUF-2026-103', 'M004', 8.5, 'Pflasterbau', 'Verbundsteinpflaster verlegen', 510.00],
-
-    // Mittwoch 23.09.2026
-    ['2026-09-23', 'AUF-2026-101', 'M001', 9.0, 'Bewehrung', 'Stahlbewehrung verlegen', 585.00],
-    ['2026-09-23', 'AUF-2026-101', 'M002', 8.5, 'Schalung', 'Fundamentschalung aufbauen', 510.00],
-    ['2026-09-23', 'AUF-2026-102', 'M003', 8.0, 'Kabeltiefbau', 'Kabelzug 4x240mm2', 480.00],
-    ['2026-09-23', 'AUF-2026-102', 'M005', 8.0, 'Kabeltiefbau', 'Kabelzughilfe und Abdichtung', 480.00],
-    ['2026-09-23', 'AUF-2026-103', 'M004', 8.0, 'Pflasterbau', 'Pflasterflächen einsanden', 480.00],
-    ['2026-09-23', 'AUF-2026-103', 'M006', 8.5, 'Pflasterbau', 'Randsteine setzen in Beton', 510.00],
-    ['2026-09-23', 'AUF-2026-103', 'G202', 6.5, 'Maschineneinsatz', 'Bodenbewegung Randbereiche', 455.00],
-
-    // Donnerstag 24.09.2026
-    ['2026-09-24', 'AUF-2026-101', 'M001', 8.0, 'Betonarbeiten', 'Betonage Bodenplatte C25/30', 520.00],
-    ['2026-09-24', 'AUF-2026-101', 'M002', 8.5, 'Betonarbeiten', 'Betonverteilung und Rütteln', 552.50],
-    ['2026-09-24', 'AUF-2026-102', 'M003', 8.5, 'Kabeltiefbau', 'Verfüllung und Verdichtung', 510.00],
-    ['2026-09-24', 'AUF-2026-102', 'M005', 8.0, 'Kabeltiefbau', 'Verdichtungskontrolle Dynamisch', 480.00],
-    ['2026-09-24', 'AUF-2026-102', 'G203', 6.0, 'Maschineneinsatz', 'Lagenweise Verdichtung Graben', 270.00],
-    ['2026-09-24', 'AUF-2026-103', 'M006', 8.0, 'Pflasterbau', 'Anschneidearbeiten Ecken', 480.00],
-
-    // Freitag 25.09.2026
-    ['2026-09-25', 'AUF-2026-101', 'M001', 6.5, 'Nachbehandlung', 'Betonnachbehandlung Folie/Wasser', 422.50],
-    ['2026-09-25', 'AUF-2026-101', 'M002', 6.5, 'Ausschalen', 'Randschalungen entfernen/reinigen', 422.50],
-    ['2026-09-25', 'AUF-2026-102', 'M003', 6.0, 'Dokumentation', 'Trassenaufmaß und Fotos', 360.00],
-    ['2026-09-25', 'AUF-2026-102', 'M005', 4.0, 'Baustellenräumung', 'Werkzeug und Absperrung rückbauen', 240.00],
-    ['2026-09-25', 'AUF-2026-102', 'F101', 4.0, 'Transport', 'Rücktransport Werkzeugmagazin', 180.00],
-    ['2026-09-25', 'AUF-2026-103', 'M004', 6.5, 'Übergabe', 'Endreinigung und Übergabe Bauherr', 390.00],
-    ['2026-09-25', 'AUF-2026-103', 'M006', 6.5, 'Baustellenräumung', 'Abfuhr Reste und Besenreinigung', 390.00],
-
-    // Vorwoche KW 38
-    ['2026-09-16', 'AUF-2026-095', 'M001', 8.0, 'Baustelleneinrichtung', 'Bauzaun und Container aufstellen', 520.00],
-    ['2026-09-16', 'AUF-2026-095', 'M002', 8.0, 'Baustelleneinrichtung', 'Strom- und Wasseranschluss', 480.00],
-    ['2026-09-17', 'AUF-2026-095', 'M001', 8.5, 'Erdaushub', 'Mutterboden abtragen', 552.50],
-    ['2026-09-17', 'AUF-2026-095', 'G201', 8.0, 'Maschineneinsatz', 'Baggerarbeiten Abschieben', 760.00],
-    ['2026-09-18', 'AUF-2026-095', 'M003', 7.5, 'Vermessung', 'Schnurgerüst einmessen', 450.00]
-  ];
-
-  // ==========================================================================
-  // 2. INITIALISIERUNG
-  // ==========================================================================
-  document.addEventListener('DOMContentLoaded', () => {
-    initApp();
+document.addEventListener("DOMContentLoaded", () => {
+  // --- Globaler Drag & Drop Schutz ---
+  // Verhindert, dass Chrome/Edge bei Drag & Drop (oder versehentlichem Danebenwerfen)
+  // die Datei im Windows-Download-Ordner ablegt oder die Webseite verlässt.
+  ["dragenter", "dragover", "dragleave", "drop"].forEach((eventName) => {
+    window.addEventListener(eventName, (e) => {
+      e.preventDefault();
+    }, false);
+    document.addEventListener(eventName, (e) => {
+      e.preventDefault();
+    }, false);
   });
 
-  function initApp() {
-    setupDomEvents();
-    loadStammdatenFromStorage();
-    loadManualEntriesFromStorage();
-    renderApp();
+  // App-Zustand im Arbeitsspeicher
+  const state = {
+    refWorkbook: null,
+    targetWorkbook: null,
+    refFileName: "",
+    targetFileName: "",
+    currentRefSheet: "",
+    currentTargetSheet: "",
+    mapping: [],
+    allResults: [],
+    currentFilter: "errors",
+    searchQuery: "",
+    appliedCorrections: {}, // cellKey ("row_col") -> newVal
+    lastTargetBuffer: null,
+    staffList: [],
+    staffMap: {},
+    timesheetData: null,
+    lastInsertedRow: null,
+    modalRowMode: "insert", // "insert" oder "edit"
+    modalEditRowIdx: null,
+    modalPrefill: null,
+    modalCaller: "timesheet",
+    highlightEmployeeRes: null
+  };
+
+  // DOM Elemente
+  const dropRef = document.getElementById("drop-ref");
+  const inputRef = document.getElementById("input-ref");
+  const refFileInfo = document.getElementById("ref-file-info");
+  const refFilename = document.getElementById("ref-filename");
+  const selectRefSheet = document.getElementById("select-ref-sheet");
+  const refStorageBadge = document.getElementById("ref-storage-badge");
+  const refInfoDetail = document.getElementById("ref-info-detail");
+  const btnChangeRef = document.getElementById("btn-change-ref");
+  const btnClearRef = document.getElementById("btn-clear-ref");
+
+  const dropTgt = document.getElementById("drop-tgt");
+  const inputTgt = document.getElementById("input-tgt");
+  const tgtFileInfo = document.getElementById("tgt-file-info");
+  const tgtFilename = document.getElementById("tgt-filename");
+  const selectTgtSheet = document.getElementById("select-tgt-sheet");
+  const tgtStatusBadge = document.getElementById("tgt-status-badge");
+  const btnChangeTgt = document.getElementById("btn-change-tgt");
+
+  // Mitarbeiter & Personal DOM
+  const dropStaff = document.getElementById("drop-staff");
+  const inputStaff = document.getElementById("input-staff");
+  const staffFileInfo = document.getElementById("staff-file-info");
+  const staffInfoTitle = document.getElementById("staff-info-title");
+  const staffInfoDetail = document.getElementById("staff-info-detail");
+  const staffDropZoneContent = document.getElementById("staff-drop-zone-content");
+  const staffStorageBadge = document.getElementById("staff-storage-badge");
+  const btnChangeStaff = document.getElementById("btn-change-staff");
+  const btnClearStaff = document.getElementById("btn-clear-staff");
+  const btnDownloadStaffTemplate = document.getElementById("btn-download-staff-template");
+
+  // Arbeitszeiten / Timesheet DOM
+  const timesheetSection = document.getElementById("timesheet-section");
+  const selectTsDateCol = document.getElementById("select-ts-date-col");
+  const selectTsHoursCol = document.getElementById("select-ts-hours-col");
+  const selectTsResourceCol = document.getElementById("select-ts-resource-col");
+  const chkTsOnlyStaff = document.getElementById("chk-ts-only-staff");
+  const tsStaffStatusBadge = document.getElementById("ts-staff-status-badge");
+  const timesheetThead = document.getElementById("timesheet-thead");
+  const timesheetTbody = document.getElementById("timesheet-tbody");
+  const timesheetTfoot = document.getElementById("timesheet-tfoot");
+  const btnExportTimesheet = document.getElementById("btn-export-timesheet");
+
+  const btnLoadDemo = document.getElementById("btn-load-demo");
+  const configSection = document.getElementById("config-section");
+  const mappingTbody = document.getElementById("mapping-tbody");
+  const checkAllCols = document.getElementById("check-all-cols");
+  const btnStartCheck = document.getElementById("btn-start-check");
+
+  const resultsSection = document.getElementById("results-section");
+  const resultsTbody = document.getElementById("results-tbody");
+  const tableSearchInput = document.getElementById("table-search-input");
+  const filterPills = document.getElementById("filter-pills");
+
+  const btnGeneralApply = document.getElementById("btn-general-apply");
+  const btnFixZahlendreher = document.getElementById("btn-fix-zahlendreher");
+  const btnResetFixes = document.getElementById("btn-reset-fixes");
+  const btnExportExcel = document.getElementById("btn-export-excel");
+  const btnExportReport = document.getElementById("btn-export-report");
+  const toast = document.getElementById("toast");
+
+  // Ansichten-Umschalter (Tabs)
+  const tabBtnDiagnostics = document.getElementById("tab-btn-diagnostics");
+  const tabBtnFulltable = document.getElementById("tab-btn-fulltable");
+  const viewDiagnostics = document.getElementById("view-diagnostics");
+  const viewFulltable = document.getElementById("view-fulltable");
+  const tabBadgeErrors = document.getElementById("tab-badge-errors");
+  const tabBadgeTotalRows = document.getElementById("tab-badge-total-rows");
+
+  // Gesamte Excel-Datei Filter & Tabelle
+  const filterFullStaff = document.getElementById("filter-full-staff");
+  const filterFullDate = document.getElementById("filter-full-date");
+  const filterFullStatus = document.getElementById("filter-full-status");
+  const filterFullSearch = document.getElementById("filter-full-search");
+  const fulltableCountsText = document.getElementById("fulltable-counts-text");
+  const btnResetFullFilters = document.getElementById("btn-reset-full-filters");
+  const fulltableThead = document.getElementById("fulltable-thead");
+  const fulltableTbody = document.getElementById("fulltable-tbody");
+
+  // Zeile nachtragen / Bearbeiten Modal DOM
+  const modalInsertRow = document.getElementById("modal-insert-row");
+  const modalIcon = document.getElementById("modal-icon");
+  const modalTitle = document.getElementById("modal-title");
+  const modalDesc = document.getElementById("modal-desc");
+  const modalEditBanner = document.getElementById("modal-edit-banner");
+  const modalEditRowNum = document.getElementById("modal-edit-row-num");
+  const btnSwitchToInsert = document.getElementById("btn-switch-to-insert");
+  const modalInsertOnlySections = document.getElementById("modal-insert-only-sections");
+  const modalFieldsTitle = document.getElementById("modal-fields-title");
+  const btnCloseInsertModal = document.getElementById("btn-close-insert-modal");
+  const btnCancelInsertRow = document.getElementById("btn-cancel-insert-row");
+  const btnConfirmInsertRow = document.getElementById("btn-confirm-insert-row");
+  const btnConfirmIcon = document.getElementById("btn-confirm-icon");
+  const btnConfirmInsertText = document.getElementById("btn-confirm-insert-text");
+  const btnOpenInsertRowActionbar = document.getElementById("btn-open-insert-row-actionbar");
+  const btnOpenInsertRowFulltable = document.getElementById("btn-open-insert-row-fulltable");
+  const btnOpenInsertRowTimesheet = document.getElementById("btn-open-insert-row-timesheet");
+  const insertTargetRowSelect = document.getElementById("insert-target-row-select");
+  const insertTemplateRowSelect = document.getElementById("insert-template-row-select");
+  const insertRowSearch = document.getElementById("insert-row-search");
+  const insertAfterRowContainer = document.getElementById("insert-after-row-container");
+  const insertAutoHint = document.getElementById("insert-auto-hint");
+  const insertFieldsGrid = document.getElementById("insert-fields-grid");
+
+  // Buchung auswählen Modal (wenn mehrere Buchungen an einem Tag existieren)
+  const modalChooseBooking = document.getElementById("modal-choose-booking");
+  const btnCloseChooseModal = document.getElementById("btn-close-choose-modal");
+  const btnCloseChoose = document.getElementById("btn-close-choose");
+  const btnChooseAddNew = document.getElementById("btn-choose-add-new");
+  const chooseBookingTitle = document.getElementById("choose-booking-title");
+  const chooseBookingSubtitle = document.getElementById("choose-booking-subtitle");
+  const chooseBookingList = document.getElementById("choose-booking-list");
+
+  // --- IndexedDB Speicher für die Referenzdatei ---
+  const IDB_NAME = "ExcelPrueferStorage";
+  const IDB_VERSION = 1;
+  const IDB_STORE = "app_data";
+  const IDB_KEY_REF = "saved_reference_file";
+
+  function openAppDB() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB wird von diesem Browser nicht unterstützt."));
+        return;
+      }
+      const req = window.indexedDB.open(IDB_NAME, IDB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = (e) => resolve(e.target.result);
+      req.onerror = (e) => reject(e.target.error || new Error("Konnte IndexedDB nicht öffnen"));
+    });
   }
 
-  // ==========================================================================
-  // 3. STORAGE & STAMMDATEN MANAGEMENT
-  // ==========================================================================
-  function normalizeKey(str) {
-    if (str === null || str === undefined) return '';
-    let s = String(str).trim().toLowerCase();
-    // Excel Float-Artefakt wie "10.0" bereinigen
-    if (/^\d+\.0+$/.test(s)) {
-      s = s.replace(/\.0+$/, '');
-    }
-    return s;
-  }
-
-  // Liefert für rein numerische IDs die Zahl ohne führende Nullen (z. B. "0376" -> "376", "0010" -> "10")
-  function normalizeResourceKey(str) {
-    const norm = normalizeKey(str);
-    if (!norm) return '';
-    if (/^\d+$/.test(norm)) {
-      const stripped = norm.replace(/^0+/, '');
-      return stripped || '0';
-    }
-    return norm;
-  }
-
-  function loadStammdatenFromStorage() {
+  async function saveRefFileToStorage(fileName, buffer, selectedSheet) {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY_STAMMDATEN) || localStorage.getItem('excel_app_stammdaten_v1');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed.records) && parsed.records.length > 0) {
-          state.stammdaten = parsed.records;
-          state.auftraege = Array.isArray(parsed.auftraege) ? parsed.auftraege : [];
-          state.stammdatenFilename = parsed.filename || 'Stammdaten.xlsx';
-          state.stammdatenUpdatedAt = parsed.savedAt ? new Date(parsed.savedAt) : new Date();
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        const data = {
+          fileName: fileName,
+          buffer: buffer,
+          selectedSheet: selectedSheet || "",
+          savedAt: new Date().toISOString()
+        };
+        const req = store.put(data, IDB_KEY_REF);
+        req.onsuccess = () => resolve(true);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    } catch (err) {
+      console.warn("Fehler beim Speichern der Referenzdatei in IndexedDB:", err);
+      return false;
+    }
+  }
 
-          buildLookupMaps();
-          updateStammdatenStatusUI();
+  async function updateRefSheetInStorage(selectedSheet) {
+    try {
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        const getReq = store.get(IDB_KEY_REF);
+        getReq.onsuccess = () => {
+          if (getReq.result) {
+            const item = getReq.result;
+            item.selectedSheet = selectedSheet;
+            store.put(item, IDB_KEY_REF);
+          }
+          resolve(true);
+        };
+        getReq.onerror = () => resolve(false);
+      });
+    } catch (err) {
+      console.warn("Konnte gewähltes Arbeitsblatt nicht im Speicher aktualisieren:", err);
+    }
+  }
+
+  async function loadRefFileFromStorage() {
+    try {
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readonly");
+        const store = tx.objectStore(IDB_STORE);
+        const req = store.get(IDB_KEY_REF);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    } catch (err) {
+      console.warn("Fehler beim Laden der Referenzdatei aus IndexedDB:", err);
+      return null;
+    }
+  }
+
+  async function deleteRefFileFromStorage() {
+    try {
+      const db = await openAppDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, "readwrite");
+        const store = tx.objectStore(IDB_STORE);
+        const req = store.delete(IDB_KEY_REF);
+        req.onsuccess = () => resolve(true);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    } catch (err) {
+      console.warn("Fehler beim Löschen der Referenzdatei aus IndexedDB:", err);
+      return false;
+    }
+  }
+
+  async function restoreSavedReferenceFile() {
+    try {
+      const saved = await loadRefFileFromStorage();
+      if (saved && saved.buffer) {
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(saved.buffer);
+        state.refWorkbook = wb;
+        state.refFileName = saved.fileName || "Referenz_Stammdaten.xlsx";
+
+        if (refFilename) refFilename.textContent = state.refFileName;
+        populateSheetSelect(selectRefSheet, wb.worksheets);
+
+        if (saved.selectedSheet && wb.worksheets.some(ws => ws.name === saved.selectedSheet)) {
+          selectRefSheet.value = saved.selectedSheet;
+        }
+        state.currentRefSheet = selectRefSheet.value;
+
+        if (refFileInfo) refFileInfo.classList.remove("hidden");
+        const dropContent = dropRef ? dropRef.querySelector(".drop-zone-content") : null;
+        if (dropContent) dropContent.classList.add("hidden");
+
+        if (refStorageBadge) {
+          refStorageBadge.textContent = "Im Browser gespeichert";
+          refStorageBadge.className = "badge badge-ok";
+        }
+        if (refInfoDetail) {
+          refInfoDetail.textContent = "💾 Im Browser gespeichert (bleibt dauerhaft erhalten)";
+        }
+
+        // Mitarbeiter automatisch aus Referenzdatei laden
+        extractStaffFromReferenceWorkbook(wb);
+
+        checkReadyForConfig();
+        console.log(`Referenzdatei "${state.refFileName}" aus dem Browser-Speicher wiederhergestellt.`);
+      }
+    } catch (err) {
+      console.warn("Konnte gespeicherte Referenzdatei nicht laden:", err);
+    }
+  }
+
+  // --- Drag & Drop Einrichten ---
+  setupDropZone(dropRef, inputRef, async (file) => {
+    try {
+      state.refFileName = file.name;
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(arrayBuffer);
+      state.refWorkbook = wb;
+
+      refFilename.textContent = file.name;
+      populateSheetSelect(selectRefSheet, wb.worksheets);
+      state.currentRefSheet = selectRefSheet.value;
+      refFileInfo.classList.remove("hidden");
+      dropRef.querySelector(".drop-zone-content").classList.add("hidden");
+
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Im Browser gespeichert";
+        refStorageBadge.className = "badge badge-ok";
+      }
+
+      await saveRefFileToStorage(file.name, arrayBuffer, state.currentRefSheet);
+
+      // Mitarbeiter automatisch aus "Personalnummer" (Spalte A) & "Name" (Spalte B) extrahieren
+      const staffCount = extractStaffFromReferenceWorkbook(wb);
+
+      checkReadyForConfig();
+
+      // Falls Prüfdatei bereits geladen ist: Spaltenauswahl, Matrix & Gesamttabelle sofort aktualisieren
+      if (state.targetWorkbook && state.currentTargetSheet) {
+        if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+        if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+        if (typeof renderFullExcelTable === "function") renderFullExcelTable();
+      }
+
+      if (staffCount > 0) {
+        showToast(`✅ Referenzdatei "${file.name}" geladen (${staffCount} Mitarbeiter erkannt) & im Browser gespeichert.`);
+      } else {
+        showToast(`Referenzdatei "${file.name}" geladen und im Browser gespeichert.`);
+      }
+    } catch (err) {
+      console.error(err);
+      const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
+      if (isOldXls) {
+        alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als "Excel-Arbeitsmappe (.xlsx)" ab.`);
+      } else {
+        alert("Fehler beim Laden der Referenzdatei: " + err.message);
+      }
+    }
+  });
+
+  setupDropZone(dropTgt, inputTgt, async (file) => {
+    try {
+      state.targetFileName = file.name;
+      state.appliedCorrections = {};
+      const arrayBuffer = await file.arrayBuffer();
+      state.lastTargetBuffer = arrayBuffer;
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(arrayBuffer);
+      state.targetWorkbook = wb;
+
+      tgtFilename.textContent = file.name;
+      populateSheetSelect(selectTgtSheet, wb.worksheets);
+      state.currentTargetSheet = selectTgtSheet.value;
+      tgtFileInfo.classList.remove("hidden");
+      dropTgt.querySelector(".drop-zone-content").classList.add("hidden");
+
+      if (tgtStatusBadge) {
+        tgtStatusBadge.textContent = "Bereit zur Prüfung";
+        tgtStatusBadge.className = "badge badge-ok";
+        tgtStatusBadge.style.display = "inline-block";
+      }
+
+      checkReadyForConfig();
+      showToast(`Prüfdatei "${file.name}" geladen.`);
+    } catch (err) {
+      console.error(err);
+      const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
+      if (isOldXls) {
+        alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als "Excel-Arbeitsmappe (.xlsx)" ab.`);
+      } else {
+        alert("Fehler beim Laden der Prüfdatei: " + err.message);
+      }
+    }
+  });
+
+  // --- Mitarbeiter-Stammdaten: Browser-Speicher & Extraktion aus Referenzdatei ---
+  const STORAGE_KEY_STAFF = "excel_pruefer_mitarbeiter_v1";
+
+  function loadStaffFromStorage() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY_STAFF);
+      if (stored) {
+        const list = JSON.parse(stored);
+        if (Array.isArray(list) && list.length > 0) {
+          applyStaffList(list);
           return true;
         }
       }
     } catch (e) {
-      console.error('Fehler beim Laden der Stammdaten aus LocalStorage:', e);
+      console.warn("Fehler beim Laden der Mitarbeiter aus localStorage:", e);
     }
-    updateStammdatenStatusUI();
+    updateStaffUI();
     return false;
   }
 
-  function saveStammdatenToStorage(records, auftraege = [], filename = 'Stammdaten.xlsx') {
-    state.stammdaten = records;
-    state.auftraege = auftraege;
-    state.stammdatenFilename = filename;
-    state.stammdatenUpdatedAt = new Date();
+  // --- Mitarbeiter-Stammdaten: Hilfsfunktionen, Registrierung & Normalisierung ---
+  function registerStaffEntry(rawRes, name) {
+    if (!rawRes || !name) return;
+    const clean = String(rawRes).normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+    const cleanName = String(name).normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+    if (!clean || !cleanName) return;
 
-    const isRealFile = !filename.toLowerCase().includes('demo') && !filename.toLowerCase().includes('muster');
-    if (isRealFile) {
-      // Demo-Abwesenheiten (z. B. M004, M005, M006) automatisch aus dem Speicher bereinigen
-      const prevCount = state.manualEntries.length;
-      state.manualEntries = state.manualEntries.filter(e => {
-        if (e.id && e.id.startsWith('demo_')) return false;
-        if (e.ressourcennummer && e.ressourcennummer.startsWith('M00')) return false;
-        return true;
-      });
-      if (state.manualEntries.length !== prevCount) {
-        saveManualEntriesToStorage();
-      }
-      // Falls noch Demo-Tagesberichte im Speicher waren: leeren
-      if (state.bewegungsdatenFilename && state.bewegungsdatenFilename.toLowerCase().includes('demo')) {
-        state.bewegungsdaten = [];
-        state.bewegungsdatenFilename = '';
-        updateBewegungsdatenStatusUI();
-      }
-    }
+    // 1. Exakter String & Kleinschreibung
+    state.staffMap[clean] = cleanName;
+    state.staffMap[clean.toLowerCase()] = cleanName;
 
-    buildLookupMaps();
+    // 2. Ohne float-Endung .0 oder ,0 (Excel)
+    const noFloat = clean.replace(/[,.]0+$/, "");
+    state.staffMap[noFloat] = cleanName;
+    state.staffMap[noFloat.toLowerCase()] = cleanName;
 
-    try {
-      const payload = {
-        savedAt: state.stammdatenUpdatedAt.toISOString(),
-        filename: state.stammdatenFilename,
-        count: records.length,
-        records: records,
-        auftraegeCount: auftraege.length,
-        auftraege: auftraege
-      };
-      localStorage.setItem(STORAGE_KEY_STAMMDATEN, JSON.stringify(payload));
-      showToast(`Stammdaten gespeichert: ${records.length} Ressourcen & ${auftraege.length} Aufträge/Orte`, 'success');
-    } catch (e) {
-      console.error('Fehler beim Speichern in LocalStorage:', e);
-      showToast('Konnte Stammdaten nicht im LocalStorage sichern.', 'error');
-    }
-
-    if (state.bewegungsdaten.length > 0) {
-      relinkBewegungsdaten();
-    }
-
-    updateStammdatenStatusUI();
-    renderApp();
-  }
-
-  function clearStammdatenStorage() {
-    try {
-      localStorage.removeItem(STORAGE_KEY_STAMMDATEN);
-      localStorage.removeItem('excel_app_stammdaten_v1');
-      localStorage.removeItem(STORAGE_KEY_MANUAL_ENTRIES);
-
-      state.stammdaten = [];
-      state.stammdatenMap.clear();
-      state.auftraege = [];
-      state.auftraegeMap.clear();
-      if (state.auftragCompositeMap) state.auftragCompositeMap.clear();
-      if (state.auftragVariantsMap) state.auftragVariantsMap.clear();
-      state.manualEntries = [];
-      state.stammdatenFilename = '';
-      state.stammdatenUpdatedAt = null;
-
-      if (state.bewegungsdaten.length > 0) {
-        relinkBewegungsdaten();
-      }
-
-      updateStammdatenStatusUI();
-      renderApp();
-      showToast('Gesamter Speicher (Stammdaten, Aufträge & Abwesenheiten) geleert.', 'info');
-    } catch (e) {
-      console.error('Fehler beim Löschen des LocalStorage:', e);
-    }
-  }
-
-  function formatFullOrt(ort, zusatzort) {
-    const o = String(ort || '').trim();
-    const z = String(zusatzort || '').trim();
-    if (o && z) {
-      if (o.toLowerCase().includes(z.toLowerCase())) return o;
-      return `${o} (${z})`;
-    }
-    return o || z || '';
-  }
-
-  function buildLookupMaps() {
-    state.stammdatenMap.clear();
-    for (const item of state.stammdaten) {
-      if (!item) continue;
-      if (item.ressourcennummer) {
-        const rawKey = normalizeKey(item.ressourcennummer);
-        const resKey = normalizeResourceKey(item.ressourcennummer);
-        state.stammdatenMap.set(rawKey, item);
-        state.stammdatenMap.set(resKey, item);
-        // Falls rein numerisch: auch 4-stellig mit führenden Nullen mappen (z. B. "0376")
-        if (/^\d+$/.test(resKey) && resKey.length < 4) {
-          state.stammdatenMap.set(resKey.padStart(4, '0'), item);
-        }
-      }
-      if (item.name) {
-        state.stammdatenMap.set(normalizeKey(item.name), item);
-      }
-    }
-
-    state.auftraegeMap.clear();
-    state.auftragCompositeMap = new Map();
-    state.auftragVariantsMap = new Map();
-
-    for (const a of state.auftraege) {
-      if (!a) continue;
-      const aNr = String(a.auftragsnummer || '').trim();
-      if (!aNr) continue;
-
-      const normNr = normalizeKey(aNr);
-      const pureOrt = String(a.ort || '').trim();
-      const zusatz = String(a.zusatzort || '').trim();
-      const full = formatFullOrt(pureOrt, zusatz);
-
-      // Variantenliste pro Auftragsnummer (z. B. 463040 hat mehrere Spielplätze)
-      if (!state.auftragVariantsMap.has(normNr)) {
-        state.auftragVariantsMap.set(normNr, []);
-      }
-      state.auftragVariantsMap.get(normNr).push({
-        ort: pureOrt,
-        zusatzort: zusatz,
-        fullOrt: full
-      });
-
-      // Composite Keys für direkte Verknüpfungen (z. B. "463040##507", "463040-507", "463040 507")
-      if (zusatz) {
-        const normZ = normalizeKey(zusatz);
-        const strippedZ = normZ.replace(/^0+/, '');
-        state.auftragCompositeMap.set(`${normNr}##${normZ}`, full);
-        state.auftragCompositeMap.set(`${normNr}-${normZ}`, full);
-        state.auftragCompositeMap.set(`${normNr}/${normZ}`, full);
-        state.auftragCompositeMap.set(`${normNr} ${normZ}`, full);
-        state.auftragCompositeMap.set(`${normNr}_${normZ}`, full);
-        state.auftragCompositeMap.set(`${normNr}.${normZ}`, full);
-
-        if (strippedZ && strippedZ !== normZ) {
-          state.auftragCompositeMap.set(`${normNr}##${strippedZ}`, full);
-          state.auftragCompositeMap.set(`${normNr}-${strippedZ}`, full);
-          state.auftragCompositeMap.set(`${normNr} ${strippedZ}`, full);
-        }
-
-        // Falls im Zusatzort eine reine Zahl steht (z. B. "12" aus "12 - Schillerpark")
-        const numMatch = zusatz.match(/^(\d+)/);
-        if (numMatch) {
-          const num = numMatch[1];
-          const strippedNum = num.replace(/^0+/, '');
-          state.auftragCompositeMap.set(`${normNr}##${num}`, full);
-          state.auftragCompositeMap.set(`${normNr}-${num}`, full);
-          state.auftragCompositeMap.set(`${normNr}/${num}`, full);
-          state.auftragCompositeMap.set(`${normNr} ${num}`, full);
-          state.auftragCompositeMap.set(`${normNr}_${num}`, full);
-          state.auftragCompositeMap.set(`${normNr}.${num}`, full);
-
-          if (strippedNum && strippedNum !== num) {
-            state.auftragCompositeMap.set(`${normNr}##${strippedNum}`, full);
-            state.auftragCompositeMap.set(`${normNr}-${strippedNum}`, full);
-          }
-        }
-      }
-
-      // Basis-Zuordnung (Fallback): Falls kein Zusatzort angegeben wird
-      if (!state.auftraegeMap.has(normNr) || !zusatz) {
-        state.auftraegeMap.set(normNr, pureOrt || full);
-      }
-    }
-
-    // Spezieller Sammelauftrag 463040: Standardort ist "Spielplatz allgemein"
-    if (state.auftragVariantsMap.has('463040')) {
-      state.auftraegeMap.set('463040', 'Spielplatz allgemein');
-    }
-  }
-
-  // ==========================================================================
-  // 3b. MANUELLE ABWESENHEITEN (Krank, Urlaub, Überstundenabbau)
-  // ==========================================================================
-  function loadManualEntriesFromStorage() {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY_MANUAL_ENTRIES);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          const isRealStamm = state.stammdaten.length > 0 && !state.stammdatenFilename.toLowerCase().includes('demo') && !state.stammdatenFilename.toLowerCase().includes('muster');
-          if (isRealStamm) {
-            state.manualEntries = parsed.filter(e => {
-              if (e.id && e.id.startsWith('demo_')) return false;
-              if (e.ressourcennummer && e.ressourcennummer.startsWith('M00')) return false;
-              return true;
-            });
-          } else {
-            state.manualEntries = parsed;
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Fehler beim Laden der manuellen Einträge:', e);
-    }
-  }
-
-  function saveManualEntriesToStorage() {
-    try {
-      localStorage.setItem(STORAGE_KEY_MANUAL_ENTRIES, JSON.stringify(state.manualEntries));
-    } catch (e) {
-      console.error('Fehler beim Speichern der manuellen Einträge:', e);
-    }
-    updateStammdatenStatusUI();
-    renderApp();
-  }
-
-  function addOrUpdateManualEntry(entryData) {
-    const { id, ressourcennummer, dateIso, type, stunden, note } = entryData;
-    const rKey = normalizeKey(ressourcennummer);
-
-    // Bestehenden Eintrag suchen
-    let existingIndex = -1;
-    if (id) {
-      existingIndex = state.manualEntries.findIndex(e => e.id === id);
-    } else {
-      existingIndex = state.manualEntries.findIndex(e => 
-        normalizeKey(e.ressourcennummer) === rKey && e.dateIso === dateIso
-      );
-    }
-
-    const payload = {
-      id: id || ('man_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6)),
-      ressourcennummer: ressourcennummer,
-      dateIso: dateIso,
-      type: type || 'Krank',
-      stunden: Number(stunden) || 0,
-      note: note || '',
-      createdAt: new Date().toISOString()
-    };
-
-    if (existingIndex !== -1) {
-      state.manualEntries[existingIndex] = payload;
-      showToast(`Eintrag (${payload.type} ${formatNumber(payload.stunden, 1)} Std.) aktualisiert.`, 'success');
-    } else {
-      state.manualEntries.push(payload);
-      showToast(`Eintrag (${payload.type} ${formatNumber(payload.stunden, 1)} Std.) hinzugefügt.`, 'success');
-    }
-
-    saveManualEntriesToStorage();
-  }
-
-  function deleteManualEntryById(id) {
-    const idx = state.manualEntries.findIndex(e => e.id === id);
-    if (idx !== -1) {
-      const removed = state.manualEntries.splice(idx, 1)[0];
-      saveManualEntriesToStorage();
-      showToast(`Eintrag (${removed.type}) gelöscht.`, 'info');
-      return true;
-    }
-    return false;
-  }
-
-  function findManualEntry(ressourcennummer, dateIso) {
-    if (!ressourcennummer || !dateIso) return null;
-    const rKey = normalizeKey(ressourcennummer);
-    return state.manualEntries.find(e => 
-      normalizeKey(e.ressourcennummer) === rKey && e.dateIso === dateIso
-    ) || null;
-  }
-
-  function updateStammdatenStatusUI() {
-    const resCount = state.stammdaten.length;
-    const aufCount = state.auftraege.length;
-    const manCount = state.manualEntries.length;
-
-    const card = document.getElementById('cardStammdaten');
-    const badge = document.getElementById('badgeStammdatenStatus');
-    const indicator = document.getElementById('indicatorStamm');
-    const txtStatus = document.getElementById('txtStammdatenStatus');
-
-    const modalStatus = document.getElementById('modalStammStatusText');
-    const modalAuftragStatus = document.getElementById('modalAuftragStatusText');
-    const modalManualCount = document.getElementById('modalManualCountText');
-    const modalUpdated = document.getElementById('modalStammUpdatedText');
-    const modalFilename = document.getElementById('modalStammFilenameText');
-    const modalBody = document.getElementById('modalStammTableBody');
-    const modalAuftragBody = document.getElementById('modalAuftragTableBody');
-    const modalManualListBody = document.getElementById('modalManualListBody');
-
-    if (resCount > 0 || aufCount > 0) {
-      card.classList.add('loaded');
-      badge.textContent = `${resCount} Ressourcen aktiv`;
-      indicator.classList.add('active');
-      const timeStr = state.stammdatenUpdatedAt ? formatGermanDateTime(state.stammdatenUpdatedAt) : '';
-      txtStatus.textContent = `${resCount} Ressourcen & ${aufCount} Orte im Speicher (${state.stammdatenFilename || 'Referenz'})`;
-
-      if (modalStatus) modalStatus.textContent = `${resCount} Ressourcen hinterlegt`;
-      if (modalAuftragStatus) modalAuftragStatus.textContent = `${aufCount} Aufträge mit Ort hinterlegt`;
-      if (modalManualCount) modalManualCount.textContent = `${manCount} Sonderzeiten erfasst`;
-      if (modalUpdated) modalUpdated.textContent = timeStr || 'Unbekannt';
-      if (modalFilename) modalFilename.textContent = state.stammdatenFilename || '--';
-
-      if (modalBody) {
-        modalBody.innerHTML = state.stammdaten.map(item => `
-          <tr>
-            <td><strong>${escapeHtml(item.ressourcennummer)}</strong></td>
-            <td>${escapeHtml(item.name)}</td>
-            <td><span class="badge ${getCategoryBadgeClass(item.kategorie)}">${escapeHtml(item.kategorie)}</span></td>
-          </tr>
-        `).join('');
-      }
-
-      if (modalAuftragBody) {
-        if (state.auftraege.length > 0) {
-          modalAuftragBody.innerHTML = state.auftraege.map(a => `
-            <tr>
-              <td><span class="order-code">${escapeHtml(a.auftragsnummer)}</span></td>
-              <td><span class="ort-tag">${escapeHtml(a.ort || '–')}</span></td>
-              <td>${a.zusatzort ? `<span class="ort-zusatz-badge">${escapeHtml(a.zusatzort)}</span>` : '<span class="text-muted">–</span>'}</td>
-            </tr>
-          `).join('');
-        } else {
-          modalAuftragBody.innerHTML = `<tr><td colspan="3" class="text-center text-muted">Keine gesonderten Aufträge/Orte vorhanden.</td></tr>`;
-        }
+    // 3. Wenn es Ziffern sind (z. B. "1773" oder "1373" oder "0045"):
+    // Unpadded und alle gängigen Padding-Längen (1- bis 10-stellig) mappen
+    if (/^\d+$/.test(noFloat)) {
+      const numVal = parseInt(noFloat, 10);
+      const unpadded = String(numVal);
+      state.staffMap[unpadded] = cleanName;
+      for (let len = 1; len <= 10; len++) {
+        state.staffMap[unpadded.padStart(len, "0")] = cleanName;
       }
     } else {
-      card.classList.remove('loaded');
-      badge.textContent = 'Warten auf Datei';
-      indicator.classList.remove('active');
-      txtStatus.textContent = 'Keine Stammdaten im Browser gespeichert.';
-
-      if (modalStatus) modalStatus.textContent = '0 Ressourcen';
-      if (modalAuftragStatus) modalAuftragStatus.textContent = '0 Aufträge';
-      if (modalManualCount) modalManualCount.textContent = '0 Einträge';
-      if (modalUpdated) modalUpdated.textContent = 'Nie';
-      if (modalFilename) modalFilename.textContent = '--';
-      if (modalBody) {
-        modalBody.innerHTML = `<tr><td colspan="3" class="text-center text-muted">Keine Stammdaten vorhanden.</td></tr>`;
-      }
-      if (modalAuftragBody) {
-        modalAuftragBody.innerHTML = `<tr><td colspan="3" class="text-center text-muted">Keine Aufträge vorhanden.</td></tr>`;
-      }
-    }
-
-    if (modalManualListBody) {
-      if (state.manualEntries.length > 0) {
-        const sortedMan = [...state.manualEntries].sort((a, b) => b.dateIso.localeCompare(a.dateIso));
-        modalManualListBody.innerHTML = sortedMan.map(m => {
-          const emp = lookupStammdaten(m.ressourcennummer);
-          const empName = emp ? emp.name : m.ressourcennummer;
-          return `
-            <tr>
-              <td><strong>${escapeHtml(formatGermanDate(parseAnyDate(m.dateIso)))}</strong></td>
-              <td>${escapeHtml(empName)} (${escapeHtml(m.ressourcennummer)})</td>
-              <td><span class="badge-absence ${getAbsenceBadgeClass(m.type)}">${escapeHtml(m.type)}</span></td>
-              <td class="text-right font-bold">${formatNumber(m.stunden, 1)} Std.</td>
-              <td style="font-size: 0.8rem; color: #475569;">${escapeHtml(m.note || '–')}</td>
-              <td class="text-center">
-                <button type="button" class="btn btn-chip" style="color: #dc2626;" onclick="window.deleteManualEntryDirect('${m.id}')">Löschen</button>
-              </td>
-            </tr>
-          `;
-        }).join('');
-      } else {
-        modalManualListBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">Keine Abwesenheiten eingetragen.</td></tr>`;
-      }
-    }
-
-    updateCategoryDropdown();
-    populateManualModalEmployees();
-  }
-
-  function updateCategoryDropdown() {
-    const sel = document.getElementById('filterCategory');
-    if (!sel) return;
-
-    const currentVal = sel.value;
-    const categories = new Set();
-
-    for (const item of state.stammdaten) {
-      if (item.kategorie && item.kategorie.trim()) {
-        categories.add(item.kategorie.trim());
-      }
-    }
-    for (const item of state.bewegungsdaten) {
-      if (item.kategorie && item.kategorie !== 'Nicht zugeordnet') {
-        categories.add(item.kategorie);
-      }
-    }
-
-    if (categories.size === 0) {
-      categories.add('Mitarbeiter');
-      categories.add('Fahrzeug');
-      categories.add('Maschine');
-    }
-
-    const sortedCats = Array.from(categories).sort();
-    let html = `<option value="">Alle Kategorien</option>`;
-    for (const cat of sortedCats) {
-      const selected = cat === currentVal ? 'selected' : '';
-      html += `<option value="${escapeHtml(cat)}" ${selected}>${escapeHtml(cat)}</option>`;
-    }
-    sel.innerHTML = html;
-  }
-
-  // ==========================================================================
-  // 4. DATEI-PARSING (SheetJS)
-  // ==========================================================================
-  function parseStammdatenFile(file) {
-    if (!file) return;
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, { type: 'array' });
-
-        const parsedRecords = [];
-        const parsedAuftraege = [];
-        const seenAuftraege = new Set();
-        const seenRessourcen = new Set();
-
-        for (const sheetName of workbook.SheetNames) {
-          const worksheet = workbook.Sheets[sheetName];
-          const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-          if (!rawRows || rawRows.length === 0) continue;
-
-          // Header-Prüfung
-          const firstRow = rawRows[0].map(c => String(c).toLowerCase().trim());
-          const hasHeader = firstRow.some(c => 
-            c.includes('mitarbeiter') || c.includes('pers') || c.includes('name') || 
-            c.includes('auftrag') || c.includes('ort') || c.includes('baustelle') || 
-            c.includes('zusatz') || c.includes('fahrzeug') || c.includes('gerät') || 
-            c.includes('maschine') || c.includes('ressource')
-          );
-          const startIdx = hasHeader ? 1 : 0;
-
-          // Standard-Spaltenzuordnung gemäß Benutzeranforderung:
-          // Spalte A (0) = Mitarbeiternummer, Spalte B (1) = Name Mitarbeiter
-          // Spalte C (2) = Auftragsnummer, Spalte D (3) = Baustellen Ort, Spalte E (4) = zusatzort
-          // Spalte F (5) = Fahrzeug und Geräte-Nummer, Spalte G (6) = Fahrzeug/Geräte Name
-          let colMA_Nr = 0;
-          let colMA_Name = 1;
-          let colAuf_Nr = 2;
-          let colAuf_Ort = 3;
-          let colAuf_Zusatz = 4;
-          let colFG_Nr = 5;
-          let colFG_Name = 6;
-
-          if (hasHeader) {
-            firstRow.forEach((h, idx) => {
-              if (
-                h.includes('personalnummer') || h.includes('personal-nr') || h.includes('pers.-nr') ||
-                h.includes('personalnr') || h.includes('mitarbeiternummer') || h.includes('mitarbeiter-nr') ||
-                (h.includes('mitarbeiter') && (h.includes('nr') || h.includes('id') || h.includes('nummer'))) ||
-                (h.includes('personal') && (h.includes('nr') || h.includes('id') || h.includes('nummer')))
-              ) {
-                colMA_Nr = idx;
-              } else if (
-                h === 'name' || h.includes('name mitarbeiter') || h.includes('mitarbeitername') ||
-                (h.includes('name') && !h.includes('fahrzeug') && !h.includes('gerät') && !h.includes('maschine')) ||
-                (h.includes('mitarbeiter') && !h.includes('nr') && !h.includes('id') && !h.includes('nummer'))
-              ) {
-                colMA_Name = idx;
-              } else if (h.includes('auftragsnummer') || h.includes('auftrag') || h.includes('projekt') || h === 'auftragnummer') {
-                colAuf_Nr = idx;
-              } else if (h.includes('baustellen ort') || h.includes('baustelle') || (h.includes('ort') && !h.includes('zusatz'))) {
-                colAuf_Ort = idx;
-              } else if (h.includes('spielplatz') || h.includes('zusatzort') || h.includes('zusatz') || h.includes('zusatznummer')) {
-                colAuf_Zusatz = idx;
-              } else if (
-                (h.includes('fahrzeug') && (h.includes('nr') || h.includes('nummer'))) ||
-                (h.includes('gerät') && (h.includes('nr') || h.includes('nummer'))) ||
-                h.includes('kfz-nr') || h.includes('maschinen-nr') || h.includes('fahrzeugnummer')
-              ) {
-                colFG_Nr = idx;
-              } else if (
-                h === 'fahrzeug' || h === 'gerät' || h === 'maschine' ||
-                h.includes('fahrzeug/geräte name') || h.includes('gerätename') ||
-                (h.includes('fahrzeug') && h.includes('name')) ||
-                (h.includes('gerät') && h.includes('name')) ||
-                h.includes('maschinenname')
-              ) {
-                colFG_Name = idx;
-              }
-            });
-          }
-
-          // Dediziertes Auftragsblatt erkennen (falls Legacy-Datei mit 2 Blättern vorliegt)
-          const sheetLower = sheetName.toLowerCase();
-          const isDedicatedAuftragSheet = (sheetLower.includes('auftrag') || sheetLower.includes('baustelle')) && rawRows[0].length <= 3;
-
-          if (isDedicatedAuftragSheet) {
-            for (let r = startIdx; r < rawRows.length; r++) {
-              const row = rawRows[r];
-              if (!row || row.length === 0) continue;
-              const aNr = String(row[0] || '').trim();
-              const aOrt = String(row[1] || '').trim();
-              const aZusatz = String(row[2] || '').trim();
-              if (aNr || aOrt || aZusatz) {
-                const aKey = normalizeKey(`${aNr}##${aZusatz}##${aOrt}`);
-                if (!seenAuftraege.has(aKey)) {
-                  seenAuftraege.add(aKey);
-                  parsedAuftraege.push({ auftragsnummer: aNr, ort: aOrt, zusatzort: aZusatz });
-                }
-              }
-            }
-          } else {
-            // Standard-Verarbeitung: Spalten A..G parallel erfassen
-            for (let r = startIdx; r < rawRows.length; r++) {
-              const row = rawRows[r];
-              if (!row || row.length === 0) continue;
-
-              // 1. Spalte A & B: Mitarbeiter
-              const mNr = String(row[colMA_Nr] || '').trim();
-              const mName = String(row[colMA_Name] || '').trim();
-              if (mNr || mName) {
-                const rKey = normalizeResourceKey(mNr) || normalizeKey(mName);
-                if (!seenRessourcen.has(rKey)) {
-                  seenRessourcen.add(rKey);
-                  parsedRecords.push({
-                    ressourcennummer: mNr,
-                    name: mName || `Mitarbeiter ${mNr}`,
-                    kategorie: 'Mitarbeiter'
-                  });
-                }
-              }
-
-              // 2. Spalte C, D & E: Aufträge, Baustellen-Orte & Zusatzorte
-              const aNr = String(row[colAuf_Nr] || '').trim();
-              const aOrt = String(row[colAuf_Ort] || '').trim();
-              const aZusatz = String(row[colAuf_Zusatz] || '').trim();
-              if (aNr || aOrt || aZusatz) {
-                const aKey = normalizeKey(`${aNr}##${aZusatz}##${aOrt}`);
-                if (!seenAuftraege.has(aKey)) {
-                  seenAuftraege.add(aKey);
-                  parsedAuftraege.push({
-                    auftragsnummer: aNr,
-                    ort: aOrt,
-                    zusatzort: aZusatz
-                  });
-                }
-              }
-
-              // 3. Spalte F & G: Fahrzeuge & Geräte
-              const fNr = String(row[colFG_Nr] || '').trim();
-              const fName = String(row[colFG_Name] || '').trim();
-              if (fNr || fName) {
-                const fKey = normalizeKey(fNr) || normalizeKey(fName);
-                if (!seenRessourcen.has(fKey)) {
-                  seenRessourcen.add(fKey);
-
-                  const lowerName = fName.toLowerCase();
-                  let kat = 'Fahrzeug';
-                  if (lowerName.includes('bagger') || lowerName.includes('rüttel') || 
-                      lowerName.includes('walze') || lowerName.includes('stampfer') || 
-                      lowerName.includes('gerät') || lowerName.includes('maschine') ||
-                      lowerName.includes('radlader') || lowerName.includes('dumper') ||
-                      lowerName.includes('häcksler') || lowerName.includes('schneider') ||
-                      lowerName.includes('aggregat') || lowerName.includes('kompressor')) {
-                    kat = 'Maschine';
-                  } else if (lowerName.includes('lkw') || lowerName.includes('pkw') ||
-                             lowerName.includes('sprinter') || lowerName.includes('transporter') ||
-                             lowerName.includes('caddy') || lowerName.includes('bulli') ||
-                             lowerName.includes('bus') || lowerName.includes('pritsch') ||
-                             lowerName.includes('anhänger') || lowerName.includes('fahrzeug')) {
-                    kat = 'Fahrzeug';
-                  } else {
-                    kat = 'Fahrzeug / Gerät';
-                  }
-
-                  parsedRecords.push({
-                    ressourcennummer: fNr,
-                    name: fName || `Gerät ${fNr}`,
-                    kategorie: kat
-                  });
-                }
-              }
-            }
-          }
+      const digitsMatch = noFloat.match(/\b\d+\b/);
+      if (digitsMatch) {
+        const numVal = parseInt(digitsMatch[0], 10);
+        const unpadded = String(numVal);
+        state.staffMap[unpadded] = cleanName;
+        for (let len = 1; len <= 10; len++) {
+          state.staffMap[unpadded.padStart(len, "0")] = cleanName;
         }
-
-        if (parsedRecords.length === 0 && parsedAuftraege.length === 0) {
-          showToast('Keine gültigen Datensätze in den Stammdaten gefunden.', 'error');
-          return;
-        }
-
-        saveStammdatenToStorage(parsedRecords, parsedAuftraege, file.name);
-      } catch (err) {
-        console.error('Fehler beim Lesen der Stammdaten:', err);
-        showToast('Fehler beim Einlesen der Excel-Datei: ' + err.message, 'error');
       }
-    };
+    }
 
-    reader.onerror = () => {
-      showToast('Konnte Datei nicht lesen.', 'error');
-    };
+    // 4. Auch nach dem Namen indexieren
+    state.staffMap[cleanName] = cleanName;
+    state.staffMap[cleanName.toLowerCase()] = cleanName;
 
-    reader.readAsArrayBuffer(file);
-  }
+    // 5. Bei Namen mit Althön / Altöhn oder Schreibweisen-Varianten:
+    const lowerName = cleanName.toLowerCase();
+    const isAlthoen = lowerName.includes("althön") || lowerName.includes("altöhn") || lowerName.includes("althoen");
+    if (isAlthoen) {
+      state.staffMap["althön"] = cleanName;
+      state.staffMap["altöhn"] = cleanName;
+      state.staffMap["althoen"] = cleanName;
+      state.staffMap["uwe althön"] = cleanName;
+      state.staffMap["uwe altöhn"] = cleanName;
+      state.staffMap["althön, uwe"] = cleanName;
+      state.staffMap["altöhn, uwe"] = cleanName;
+      state.staffMap["althön uwe"] = cleanName;
+      state.staffMap["altöhn uwe"] = cleanName;
 
-  function parseBewegungsdatenFile(file) {
-    if (!file) return;
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-
-        const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: '' });
-
-        if (!rawRows || rawRows.length === 0) {
-          showToast('Die ausgewählte Bewegungsdaten-Datei ist leer.', 'error');
-          return;
+      // Beide Nummern (1773 und 1373) für Althön registrieren
+      ["1773", "1373"].forEach(num => {
+        state.staffMap[num] = cleanName;
+        for (let len = 1; len <= 10; len++) {
+          state.staffMap[num.padStart(len, "0")] = cleanName;
         }
-
-        let startIndex = 0;
-        const firstRow = rawRows[0].map(c => String(c).toLowerCase().trim());
-        const hasHeader = firstRow.some(cell => 
-          cell.includes('datum') || cell.includes('auftrag') || cell.includes('ressource') || cell.includes('stunde')
-        );
-        if (hasHeader) {
-          startIndex = 1;
-        }
-
-        const rawItems = [];
-        for (let i = startIndex; i < rawRows.length; i++) {
-          const row = rawRows[i];
-          if (!row || row.length === 0 || !row.some(c => String(c).trim() !== '')) continue;
-          rawItems.push(row);
-        }
-
-        state.bewegungsdatenFilename = file.name;
-        processBewegungsdatenRows(rawItems);
-        showToast(`${state.bewegungsdaten.length} Tagesberichte eingelesen.`, 'success');
-      } catch (err) {
-        console.error('Fehler beim Lesen der Bewegungsdaten:', err);
-        showToast('Fehler beim Einlesen der Excel-Datei: ' + err.message, 'error');
-      }
-    };
-
-    reader.onerror = () => {
-      showToast('Konnte Datei nicht lesen.', 'error');
-    };
-
-    reader.readAsArrayBuffer(file);
-  }
-
-  function processBewegungsdatenRows(rawRows) {
-    const list = [];
-
-    for (const row of rawRows) {
-      const rawDate = row[0];
-      const parsedDate = parseAnyDate(rawDate);
-      const auftragsnummer = String(row[1] || '').trim();
-      const ressourcennummer = String(row[2] || '').trim();
-      const stundenRaw = row[3];
-      const stunden = parseGermanNumber(stundenRaw);
-      const leistung = String(row[4] || '').trim();
-      const beschreibung = String(row[5] || '').trim();
-      const preisRaw = row[6];
-      const preis = parseGermanNumber(preisRaw);
-
-      const stamm = lookupStammdaten(ressourcennummer);
-      let ort = lookupAuftragOrt(auftragsnummer, beschreibung, leistung);
-      if (!ort && row.length > 7 && row[7]) {
-        ort = String(row[7]).trim();
-      }
-
-      const kwInfo = parsedDate ? getISOWeekDetails(parsedDate) : {
-        week: 0,
-        year: 0,
-        key: 'unbekannt',
-        label: 'Ohne Datum',
-        rangeText: '--'
-      };
-
-      list.push({
-        id: Math.random().toString(36).substring(2, 9),
-        rawDate: rawDate,
-        dateObj: parsedDate,
-        dateIso: parsedDate ? formatDateIso(parsedDate) : '',
-        dateDisplay: parsedDate ? formatGermanDate(parsedDate) : String(rawDate || '--'),
-        weekday: parsedDate ? getWeekdayShort(parsedDate) : '',
-        kwInfo: kwInfo,
-
-        auftragsnummer: auftragsnummer || '–',
-        ort: ort || '',
-
-        ressourcennummer: ressourcennummer,
-
-        name: stamm ? stamm.name : (ressourcennummer ? `Ressource (${ressourcennummer})` : 'Unbekannt'),
-        kategorie: stamm ? stamm.kategorie : 'Nicht zugeordnet',
-        isKnown: !!stamm,
-        isMitarbeiter: stamm ? (String(stamm.kategorie).trim().toLowerCase() === 'mitarbeiter') : false,
-
-        stunden: stunden,
-        leistung: leistung || '–',
-        beschreibung: beschreibung || '–',
-        preis: preis,
-        isManualAbsence: false
+        state.staffMap[`${num} ${lowerName}`] = cleanName;
+        state.staffMap[`${num} althön`] = cleanName;
+        state.staffMap[`${num} altöhn`] = cleanName;
       });
     }
 
-    state.bewegungsdaten = list;
-
-    updateBewegungsdatenStatusUI();
-    populateKalenderwochenSelect();
-    renderApp();
+    // Einzelne Namensbestandteile indexieren
+    const nameParts = cleanName.split(/[\s,–-]+/).filter(p => p.length > 2);
+    nameParts.forEach(part => {
+      const pLow = part.toLowerCase();
+      if (!state.staffMap[pLow]) state.staffMap[pLow] = cleanName;
+    });
   }
 
-  function relinkBewegungsdaten() {
-    for (const item of state.bewegungsdaten) {
-      if (item.isManualAbsence) continue;
-      const stamm = lookupStammdaten(item.ressourcennummer);
-      if (stamm) {
-        item.name = stamm.name;
-        item.kategorie = stamm.kategorie;
-        item.isKnown = true;
-        item.isMitarbeiter = String(stamm.kategorie).trim().toLowerCase() === 'mitarbeiter';
-      } else {
-        item.name = item.ressourcennummer ? `Ressource (${item.ressourcennummer})` : 'Unbekannt';
-        item.kategorie = 'Nicht zugeordnet';
-        item.isKnown = false;
-        item.isMitarbeiter = false;
+  function getStaffName(rawRes) {
+    if (rawRes === null || rawRes === undefined) return null;
+    const s = String(rawRes).normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+    if (!s) return null;
+
+    // 1. Direkter Treffer
+    if (state.staffMap[s]) return state.staffMap[s];
+
+    // 2. Ohne .0 oder ,0 Float-Endung
+    const noFloat = s.replace(/[,.]0+$/, "");
+    if (state.staffMap[noFloat]) return state.staffMap[noFloat];
+
+    // 3. Numerischer Abgleich (unpadded und padded 1 bis 10 Stellen)
+    if (/^\d+$/.test(noFloat)) {
+      const numVal = parseInt(noFloat, 10);
+      const unpadded = String(numVal);
+      if (state.staffMap[unpadded]) return state.staffMap[unpadded];
+      for (let len = 1; len <= 10; len++) {
+        const p = unpadded.padStart(len, "0");
+        if (state.staffMap[p]) return state.staffMap[p];
       }
-      item.ort = lookupAuftragOrt(item.auftragsnummer, item.beschreibung, item.leistung);
     }
-    updateCategoryDropdown();
-  }
 
-  function lookupStammdaten(ressourcennummer) {
-    if (!ressourcennummer) return null;
-    const rawKey = normalizeKey(ressourcennummer);
-    if (state.stammdatenMap.has(rawKey)) return state.stammdatenMap.get(rawKey);
+    // 4. Case-insensitive
+    if (state.staffMap[s.toLowerCase()]) return state.staffMap[s.toLowerCase()];
+    if (state.staffMap[noFloat.toLowerCase()]) return state.staffMap[noFloat.toLowerCase()];
 
-    const resKey = normalizeResourceKey(ressourcennummer);
-    if (state.stammdatenMap.has(resKey)) return state.stammdatenMap.get(resKey);
-
-    if (/^\d+$/.test(resKey) && resKey.length < 4) {
-      const padded = resKey.padStart(4, '0');
-      if (state.stammdatenMap.has(padded)) return state.stammdatenMap.get(padded);
+    // 5. Ziffern-Extraktion falls Kombination wie "1773 Althön", "1373 Uwe Altöhn", "Nr. 1773" oder "MA-1773"
+    const digitsMatch = noFloat.match(/\b\d+\b/);
+    if (digitsMatch) {
+      const numVal = parseInt(digitsMatch[0], 10);
+      const unpadded = String(numVal);
+      if (state.staffMap[unpadded]) return state.staffMap[unpadded];
+      for (let len = 1; len <= 10; len++) {
+        const p = unpadded.padStart(len, "0");
+        if (state.staffMap[p]) return state.staffMap[p];
+      }
     }
+
+    // 6. Schreibweisen-Toleranz für Althön / Altöhn
+    const sLow = s.toLowerCase();
+    if (sLow.includes("althön") || sLow.includes("altöhn") || sLow.includes("althoen")) {
+      if (state.staffMap["althön"]) return state.staffMap["althön"];
+      if (state.staffMap["altöhn"]) return state.staffMap["altöhn"];
+    }
+
     return null;
   }
 
-  function lookupAuftragOrt(auftragsnummer, beschreibung = '', leistung = '') {
-    if (!auftragsnummer) return '';
-    const rawNr = String(auftragsnummer).trim();
-    const cleanNr = normalizeKey(rawNr);
-    const cleanLeistung = normalizeKey(leistung);
-    const cleanDesc = normalizeKey(beschreibung);
+  function applyStaffList(list) {
+    state.staffList = list;
+    state.staffMap = {};
+    list.forEach(item => {
+      const rawRes = String(item.resource || item.res || "").trim();
+      const name = String(item.name || item.mitarbeiter || "").trim();
+      if (rawRes && name) {
+        registerStaffEntry(rawRes, name);
+      }
+    });
+    updateStaffUI();
+  }
 
-    // 1. Wenn Leistung angegeben ist: Speziell für Sammelaufträge wie 463040 prüfen
-    if (cleanLeistung) {
-      const compKey = `${cleanNr}##${cleanLeistung}`;
-      if (state.auftragCompositeMap && state.auftragCompositeMap.has(compKey)) {
-        return state.auftragCompositeMap.get(compKey);
+  function saveStaffToStorage(list) {
+    try {
+      localStorage.setItem(STORAGE_KEY_STAFF, JSON.stringify(list));
+      applyStaffList(list);
+      if (state.timesheetData) {
+        renderTimesheetMatrix();
       }
-      const strippedLeistung = cleanLeistung.replace(/^0+/, '');
-      if (strippedLeistung && state.auftragCompositeMap.has(`${cleanNr}##${strippedLeistung}`)) {
-        return state.auftragCompositeMap.get(`${cleanNr}##${strippedLeistung}`);
-      }
+      if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+      if (typeof renderFullExcelTable === "function") renderFullExcelTable();
+    } catch (e) {
+      console.error("Fehler beim Speichern in localStorage:", e);
     }
+  }
 
-    // 2. Direkte Composite-Übereinstimmung (z. B. "463040##12", "463040-12")
-    if (state.auftragCompositeMap && state.auftragCompositeMap.has(cleanNr)) {
-      return state.auftragCompositeMap.get(cleanNr);
-    }
+  function clearStaffStorage() {
+    state.staffList = [];
+    state.staffMap = {};
+    try { localStorage.removeItem(STORAGE_KEY_STAFF); } catch (e) {}
+    updateStaffUI();
+    if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+    if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+    if (typeof renderFullExcelTable === "function") renderFullExcelTable();
+    showToast("Mitarbeiter-Stammdaten aus dem Browser gelöscht.");
+  }
 
-    // Zerlegung prüfen: z. B. "463040-12" oder "463040/12" oder "463040 12"
-    const splitMatch = rawNr.match(/^([A-Za-z0-9]+)[\s\-_/.:]+([A-Za-z0-9]+.*)$/);
-    if (splitMatch) {
-      const base = normalizeKey(splitMatch[1]);
-      const ext = normalizeKey(splitMatch[2]);
-      const compositeKey = `${base}##${ext}`;
-      if (state.auftragCompositeMap && state.auftragCompositeMap.has(compositeKey)) {
-        return state.auftragCompositeMap.get(compositeKey);
-      }
-      const numMatch = ext.match(/^(\d+)/);
-      if (numMatch) {
-        const numKey = `${base}##${numMatch[1]}`;
-        if (state.auftragCompositeMap && state.auftragCompositeMap.has(numKey)) {
-          return state.auftragCompositeMap.get(numKey);
+  function updateStaffUI() {
+    const count = state.staffList ? state.staffList.length : 0;
+    if (staffFileInfo && staffDropZoneContent) {
+      if (count > 0) {
+        staffFileInfo.classList.remove("hidden");
+        staffDropZoneContent.classList.add("hidden");
+        if (staffInfoTitle) staffInfoTitle.textContent = `${count} Mitarbeiter aktiv`;
+        if (staffInfoDetail) staffInfoDetail.textContent = `💾 Im Browser gespeichert (dauerhaft erhalten)`;
+        if (staffStorageBadge) {
+          staffStorageBadge.textContent = "Im Browser gespeichert";
+          staffStorageBadge.className = "badge badge-ok";
+        }
+      } else {
+        staffFileInfo.classList.add("hidden");
+        staffDropZoneContent.classList.remove("hidden");
+        if (staffStorageBadge) {
+          staffStorageBadge.textContent = "Optional";
+          staffStorageBadge.className = "badge badge-leer-ok";
         }
       }
     }
+    if (tsStaffStatusBadge) {
+      if (count > 0) {
+        tsStaffStatusBadge.className = "badge badge-ok";
+        tsStaffStatusBadge.innerHTML = `👤 ${count} Mitarbeiter aktiv`;
+      } else {
+        tsStaffStatusBadge.className = "badge badge-leer-ok";
+        tsStaffStatusBadge.innerHTML = `⚠️ Keine Mitarbeiterdatei geladen (alle Ressourcen werden angezeigt)`;
+      }
+    }
+  }
 
-    // 3. Variantenabgleich bei Sammelaufträgen (z. B. 463040 Spielplatz allgemein mit Zusatznummern)
-    if (state.auftragVariantsMap && state.auftragVariantsMap.has(cleanNr)) {
-      const variants = state.auftragVariantsMap.get(cleanNr);
-      if (variants && variants.length > 0) {
-        const contextText = `${rawNr} ${cleanDesc} ${cleanLeistung}`.toLowerCase();
-        
-        for (const v of variants) {
-          if (!v.zusatzort) continue;
-          const zClean = normalizeKey(v.zusatzort);
+  function getCleanCellValue(cell) {
+    if (!cell) return "";
+    let val = WebExcelEngine.extractCellValue(cell.value, cell);
+    if (!val && cell.text) val = cell.text;
+    if (!val && cell.model && cell.model.value !== undefined) val = String(cell.model.value);
+    return String(val || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+  }
 
-          // Exakte Übereinstimmung mit Leistung
-          if (cleanLeistung && (zClean === cleanLeistung || zClean.replace(/^0+/, '') === cleanLeistung.replace(/^0+/, ''))) {
-            return v.fullOrt;
-          }
+  // --- Mitarbeiter-Datei Drag & Drop Einrichten (Spalte A: Nummer, Spalte B: Name) ---
+  if (dropStaff && inputStaff) {
+    setupDropZone(dropStaff, inputStaff, async (file) => {
+      try {
+        showToast(`Lese Mitarbeiterdatei "${file.name}"...`);
+        const parsedList = [];
+        const seenResKeys = new Set();
 
-          // Textsuche im Kontext (z. B. "Schillerpark")
-          if (contextText.includes(zClean)) {
-            return v.fullOrt;
-          }
+        const addStaffItem = (rawRes, rawName, dept = "") => {
+          let cleanRes = String(rawRes || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+          let cleanName = String(rawName || "").normalize("NFC").replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
 
-          // Zahlensuche als ganzes Wort (z. B. "12" oder "#12" oder "Spielplatz 12")
-          const numMatch = zClean.match(/^(\d+)/);
-          if (numMatch) {
-            const num = numMatch[1];
-            const numRegex = new RegExp(`(?:\\b|#|nr\\.?\\s*|spielplatz\\s*)${num}\\b`, 'i');
-            if (numRegex.test(contextText)) {
-              return v.fullOrt;
+          // Spezialfall 1: In einem Feld steht sowohl Nummer als auch Name (z. B. "1773 Althön" oder "1773 - Uwe Altöhn")
+          if (cleanRes && !cleanName) {
+            const m = cleanRes.match(/^(\d+)\s*[-:–/|]?\s*(.+)$/);
+            if (m) {
+              cleanRes = m[1];
+              cleanName = m[2].trim();
             }
           }
-        }
+          if (!cleanRes && cleanName) {
+            const m = cleanName.match(/^(\d+)\s*[-:–/|]?\s*(.+)$/);
+            if (m) {
+              cleanRes = m[1];
+              cleanName = m[2].trim();
+            }
+          }
 
-        // Falls Auftrag 463040 (Spielplatz allgemein) ist:
-        if (cleanNr === '463040') {
-          return 'Spielplatz allgemein (463040)';
-        }
-      }
-    }
+          // Spezialfall 2: Nummer und Name sind vertauscht
+          const numOnlyRes = cleanRes.replace(/[,.]0+$/, "");
+          const numOnlyName = cleanName.replace(/[,.]0+$/, "");
+          if (!/^\d+$/.test(numOnlyRes) && /^\d+$/.test(numOnlyName)) {
+            const tmp = cleanRes;
+            cleanRes = cleanName;
+            cleanName = tmp;
+          }
 
-    // 4. Basis-Auftragsort als Fallback
-    if (state.auftraegeMap.has(cleanNr)) {
-      return state.auftraegeMap.get(cleanNr);
-    }
+          // Spezialfall 3: Name wiederholt die Nummer ("1773 Althön")
+          if (cleanRes && cleanName) {
+            const n = cleanRes.replace(/[,.]0+$/, "").replace(/^0+/, "");
+            if (cleanName.startsWith(cleanRes)) {
+              cleanName = cleanName.substring(cleanRes.length).replace(/^[-:–/|\s]+/, "").trim();
+            } else if (n && cleanName.startsWith(n)) {
+              cleanName = cleanName.substring(n.length).replace(/^[-:–/|\s]+/, "").trim();
+            }
+          }
 
-    if (cleanNr === '463040') {
-      return 'Spielplatz allgemein (463040)';
-    }
+          cleanRes = cleanRes.replace(/[,.]0+$/, "");
+          if (!cleanRes) return;
 
-    return '';
-  }
+          // Kopfzeilen ignorieren
+          const lowerR = cleanRes.toLowerCase();
+          const lowerN = cleanName.toLowerCase();
+          if (["personalnummer", "persnr", "ressource", "resource", "nummer", "nr"].some(k => lowerR === k) &&
+              ["name", "mitarbeiter", "person", "nachname", "bezeichnung"].some(k => lowerN === k)) {
+            return;
+          }
 
-  function updateBewegungsdatenStatusUI() {
-    const card = document.getElementById('cardBewegungsdaten');
-    const badge = document.getElementById('badgeBewegungStatus');
-    const indicator = document.getElementById('indicatorBewegung');
-    const txtStatus = document.getElementById('txtBewegungStatus');
-    const count = state.bewegungsdaten.length;
+          if (!cleanName) {
+            cleanName = `Mitarbeiter ${cleanRes}`;
+          }
 
-    if (count > 0) {
-      card.classList.add('loaded');
-      badge.textContent = `${count} Berichte aktiv`;
-      indicator.classList.add('active');
-      txtStatus.textContent = `${count} Zeilen geladen (${state.bewegungsdatenFilename || 'Tagesberichte'})`;
-    } else {
-      card.classList.remove('loaded');
-      badge.textContent = 'Warten auf Datei';
-      indicator.classList.remove('active');
-      txtStatus.textContent = 'Noch keine Tagesberichte geladen.';
-    }
-
-    document.getElementById('navCountDetail').textContent = count + state.manualEntries.length;
-  }
-
-  // ==========================================================================
-  // 5. KALENDERWOCHEN (ISO 8601) LOGIK & DROPDOWN
-  // ==========================================================================
-  function getISOWeekDetails(dateObj) {
-    if (!dateObj || isNaN(dateObj.getTime())) {
-      return { week: 0, year: 0, key: 'unbekannt', label: 'Ohne Datum', rangeText: '--' };
-    }
-
-    const target = new Date(Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
-    const dayNr = target.getUTCDay() || 7;
-    target.setUTCDate(target.getUTCDate() + 4 - dayNr);
-
-    const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
-    const weekNo = Math.ceil((((target - yearStart) / 86400000) + 1) / 7);
-    const year = target.getUTCFullYear();
-
-    const monday = new Date(target);
-    monday.setUTCDate(monday.getUTCDate() - 3);
-    const sunday = new Date(monday);
-    sunday.setUTCDate(sunday.getUTCDate() + 6);
-
-    const kwKey = `${year}-W${String(weekNo).padStart(2, '0')}`;
-    const kwLabel = `KW ${String(weekNo).padStart(2, '0')} / ${year}`;
-    const rangeText = `${formatGermanDate(monday)} bis ${formatGermanDate(sunday)}`;
-
-    return {
-      week: weekNo,
-      year: year,
-      key: kwKey,
-      label: kwLabel,
-      rangeText: rangeText,
-      monday: monday,
-      sunday: sunday
-    };
-  }
-
-  function populateKalenderwochenSelect() {
-    const sel = document.getElementById('selectKalenderwoche');
-    if (!sel) return;
-
-    const kwMap = new Map();
-
-    for (const item of state.bewegungsdaten) {
-      if (item.kwInfo && item.kwInfo.key && item.kwInfo.key !== 'unbekannt') {
-        if (!kwMap.has(item.kwInfo.key)) {
-          kwMap.set(item.kwInfo.key, {
-            ...item.kwInfo,
-            totalEntries: 0,
-            mitarbeiterEntries: 0
-          });
-        }
-        const kwData = kwMap.get(item.kwInfo.key);
-        kwData.totalEntries++;
-        if (item.isMitarbeiter) {
-          kwData.mitarbeiterEntries++;
-        }
-      }
-    }
-
-    for (const m of state.manualEntries) {
-      const d = parseAnyDate(m.dateIso);
-      if (d) {
-        const kw = getISOWeekDetails(d);
-        if (kw.key && kw.key !== 'unbekannt') {
-          if (!kwMap.has(kw.key)) {
-            kwMap.set(kw.key, {
-              ...kw,
-              totalEntries: 0,
-              mitarbeiterEntries: 0
+          const dKey = cleanRes;
+          if (!seenResKeys.has(dKey)) {
+            seenResKeys.add(dKey);
+            parsedList.push({
+              resource: cleanRes,
+              name: cleanName,
+              dept: dept || ""
             });
           }
-          const kwData = kwMap.get(kw.key);
-          kwData.totalEntries++;
-          kwData.mitarbeiterEntries++;
+        };
+
+        const isCsv = file.name.toLowerCase().endsWith(".csv") || file.name.toLowerCase().endsWith(".txt");
+        let loadedViaExcelJS = false;
+
+        if (!isCsv) {
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const wb = new ExcelJS.Workbook();
+            await wb.xlsx.load(arrayBuffer);
+
+            wb.worksheets.forEach(ws => {
+              if (!ws) return;
+              const maxR = Math.max(
+                ws.rowCount || 0,
+                ws.actualRowCount || 0,
+                (ws._rows ? ws._rows.length : 0),
+                100
+              );
+
+              let emptyCount = 0;
+              for (let r = 1; r <= maxR; r++) {
+                const row = ws.getRow(r);
+                if (!row) {
+                  emptyCount++;
+                  if (emptyCount > 60 && r > 20) break;
+                  continue;
+                }
+
+                let cellA = getCleanCellValue(row.getCell(1));
+                let cellB = getCleanCellValue(row.getCell(2));
+                let cellC = getCleanCellValue(row.getCell(3));
+                let cellD = getCleanCellValue(row.getCell(4));
+
+                if (!cellA && !cellB && !cellC && !cellD) {
+                  emptyCount++;
+                  if (emptyCount > 60 && r > 20) break;
+                  continue;
+                }
+                emptyCount = 0;
+
+                // Fall 1: Spalte A = Nummer, Spalte B = Name
+                // Fall 2: Spalte A = Nummer, Spalte B = Vorname, Spalte C = Nachname
+                if (/^\d+/.test(cellA) && cellB && cellC && !/^\d+/.test(cellB) && !/^\d+/.test(cellC)) {
+                  addStaffItem(cellA, `${cellB} ${cellC}`, ws.name);
+                }
+                // Fall 3: Spalte A = laufende ID (1,2,3...), Spalte B = Personalnummer (z. B. 1773), Spalte C = Name
+                else if (/^\d+$/.test(cellA) && cellA.length <= 2 && /^\d+$/.test(cellB) && cellB.length >= 3 && cellC) {
+                  addStaffItem(cellB, cellC, ws.name);
+                }
+                // Fall 4: Standard Spalte A und B
+                else if (cellA || cellB) {
+                  addStaffItem(cellA, cellB, ws.name);
+                }
+              }
+            });
+            loadedViaExcelJS = true;
+          } catch (excelErr) {
+            console.warn("ExcelJS konnte Mitarbeiterdatei nicht direkt als XLSX öffnen. Prüfe Text/HTML/CSV-Fallback:", excelErr);
+          }
         }
+
+        // Text-/CSV-/HTML-Fallback (falls .csv oder wenn ExcelJS fehlgeschlagen ist, z. B. CSV/TSV oder HTML mit .xls-Endung)
+        if (!loadedViaExcelJS || parsedList.length === 0) {
+          try {
+            const text = await file.text();
+            if (text.includes("<table") || text.includes("<tr")) {
+              const parser = new DOMParser();
+              const doc = parser.parseFromString(text, "text/html");
+              const rows = doc.querySelectorAll("tr");
+              rows.forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll("td, th")).map(c => c.textContent.trim());
+                if (cells.length >= 2) {
+                  addStaffItem(cells[0], cells[1]);
+                } else if (cells.length === 1) {
+                  addStaffItem(cells[0], "");
+                }
+              });
+            } else {
+              const lines = text.split(/\r?\n/);
+              for (let l = 0; l < lines.length; l++) {
+                const line = lines[l].trim();
+                if (!line) continue;
+                let parts = line.split(";");
+                if (parts.length < 2) parts = line.split("\t");
+                if (parts.length < 2) parts = line.split(",");
+                if (parts.length < 2) parts = line.split("|");
+                if (parts.length >= 2) {
+                  let pA = parts[0];
+                  let pB = parts[1];
+                  let pC = parts.length > 2 ? parts[2] : "";
+                  if (pC && !/^\d+$/.test(pC.trim()) && !/^\d+$/.test(pB.trim())) {
+                    pB = `${pB.trim()} ${pC.trim()}`;
+                  }
+                  addStaffItem(pA, pB, "");
+                } else {
+                  addStaffItem(parts[0], "", "");
+                }
+              }
+            }
+          } catch (textErr) {
+            console.warn("Text-Fallback nicht erfolgreich:", textErr);
+          }
+        }
+
+        if (parsedList.length === 0) {
+          const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
+          if (isOldXls) {
+            alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als modernes "Excel-Arbeitsmappe (.xlsx)" oder als ".csv" ab. Danach kann sie sofort eingelesen werden.`);
+          } else {
+            alert("In der Mitarbeiterdatei wurden keine Mitarbeiter erkannt. Bitte stellen Sie sicher, dass in Spalte A die Nummern und in Spalte B die Namen stehen.");
+          }
+          return;
+        }
+
+        saveStaffToStorage(parsedList);
+        showToast(`✅ ${parsedList.length} Mitarbeiter geladen und dauerhaft im Browser gespeichert!`);
+
+        // Falls Ziel-Datei bereits geladen ist: Spaltenauswahl & Arbeitszeiten sofort aktualisieren
+        if (state.targetWorkbook && state.currentTargetSheet) {
+          const wsTarget = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+          if (wsTarget) {
+            const tgtHeaders = [];
+            const headerRow = wsTarget.getRow(1);
+            let colCount = wsTarget.columnCount;
+            headerRow.eachCell((cell, colNum) => { if (colNum > colCount) colCount = colNum; });
+            for (let c = 1; c <= colCount; c++) {
+              const hCell = headerRow.getCell(c);
+              const val = WebExcelEngine.extractCellValue(hCell.value, hCell).trim();
+              tgtHeaders.push({
+                colNum: c,
+                letter: getColLetter(c),
+                name: val || `Spalte ${getColLetter(c)}`
+              });
+            }
+            populateTimesheetColSelects(tgtHeaders);
+          }
+          if (typeof renderTimesheetMatrix === "function") renderTimesheetMatrix();
+          if (typeof populateFullTableFilters === "function") populateFullTableFilters();
+          if (typeof renderFullExcelTable === "function") renderFullExcelTable();
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Fehler beim Lesen der Mitarbeiterdatei: " + err.message);
       }
-    }
-
-    if (kwMap.size === 0) {
-      sel.innerHTML = `<option value="">-- Keine Daten vorhanden --</option>`;
-      state.selectedKwKey = '';
-      return;
-    }
-
-    const sortedKws = Array.from(kwMap.values()).sort((a, b) => b.key.localeCompare(a.key));
-
-    let html = '';
-    for (const kw of sortedKws) {
-      const isSel = (!state.selectedKwKey && kw === sortedKws[0]) || (state.selectedKwKey === kw.key);
-      if (isSel) state.selectedKwKey = kw.key;
-
-      html += `<option value="${kw.key}" ${isSel ? 'selected' : ''}>
-        ${kw.label} (${kw.rangeText})
-      </option>`;
-    }
-    sel.innerHTML = html;
+    });
   }
 
-  // ==========================================================================
-  // 6. TAB 1: DETAIL-AUSWERTUNG RENDERN & FILTERN
-  // ==========================================================================
-  function getAllDetailItemsCombined() {
-    const combined = [...state.bewegungsdaten];
+  if (btnChangeStaff && inputStaff) {
+    btnChangeStaff.addEventListener("click", (e) => {
+      e.stopPropagation();
+      inputStaff.click();
+    });
+  }
 
-    for (const m of state.manualEntries) {
-      const stamm = lookupStammdaten(m.ressourcennummer);
-      const pDate = parseAnyDate(m.dateIso);
-      const kw = pDate ? getISOWeekDetails(pDate) : null;
-      const isAbzug = (m.type === 'Arbeitszeit-Abzug' || String(m.type).toLowerCase().includes('abzug') || String(m.type).toLowerCase().includes('kürzung'));
-      const isArbeitszeitZuschlag = !isAbzug && (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
+  if (btnClearStaff) {
+    btnClearStaff.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!confirm("Möchten Sie die gespeicherten Mitarbeiter wirklich aus dem Browser löschen?")) return;
+      clearStaffStorage();
+    });
+  }
 
-      let displayHours = Number(m.stunden) || 0;
-      let auftragsnummer = '–';
-      let leistung = `Abwesenheit: ${m.type}`;
-      let beschreibung = m.note ? `${m.note} (Manuell erfasst)` : 'Manuelle Erfassung';
+  if (btnDownloadStaffTemplate) {
+    btnDownloadStaffTemplate.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        const buf = await generateStaffTemplateExcel();
+        downloadBuffer(buf, "Mitarbeiter_Stammdaten_Vorlage.xlsx");
+        showToast("📥 Vorlage für Mitarbeiter-Stammdaten heruntergeladen.");
+      } catch (err) {
+        console.error(err);
+        alert("Fehler beim Erstellen der Vorlage: " + err.message);
+      }
+    });
+  }
 
-      if (isAbzug) {
-        displayHours = -Math.abs(displayHours);
-        auftragsnummer = 'Korrektur (Abzug)';
-        leistung = 'Arbeitszeit-Korrektur (Abzug)';
-        beschreibung = m.note ? `${m.note} (Zuviel gebuchte Stunden abgezogen)` : 'Zuviel erfasste Arbeitszeit abgezogen';
-      } else if (isArbeitszeitZuschlag) {
-        displayHours = Math.abs(displayHours);
-        auftragsnummer = 'Nachbuchung';
-        leistung = 'Arbeitszeit (Nachbuchung)';
-        beschreibung = m.note ? `${m.note} (Manuell erfasst)` : 'Nachgetragene Arbeitszeit';
+  // --- Mitarbeiter-Extraktion als optionale Ergänzung aus der Referenzdatei ---
+  function extractStaffFromReferenceWorkbook(wb) {
+    if (!wb || !wb.worksheets || wb.worksheets.length === 0) return 0;
+    const staffList = [...(state.staffList || [])];
+    const seenMap = new Map();
+    staffList.forEach(s => seenMap.set(s.resource, s.name));
+
+    let addedCount = 0;
+
+    wb.worksheets.forEach(ws => {
+      if (!ws) return;
+      const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length : 0));
+      if (maxRows === 0) return;
+
+      let foundResCol = null;
+      let foundNameCol = null;
+      let startRow = 2;
+
+      for (let r = 1; r <= Math.min(maxRows, 5); r++) {
+        const row = ws.getRow(r);
+        if (!row) continue;
+        let cRes = null, cName = null;
+        row.eachCell((cell, colNum) => {
+          const val = getCleanCellValue(cell).toLowerCase();
+          if (!cRes && ["personalnummer", "persnr", "pers-nr", "ressource", "resource", "personal-nr", "mitarbeiternr", "mitarbeiter-nr", "mitarbeiter_nr"].some(k => val.includes(k))) {
+            cRes = colNum;
+          }
+          if (!cName && ["name", "mitarbeiter", "person", "nachname", "bezeichnung"].some(k => val.includes(k))) {
+            cName = colNum;
+          }
+        });
+        if (cRes && cName) {
+          foundResCol = cRes;
+          foundNameCol = cName;
+          startRow = r + 1;
+          break;
+        }
       }
 
-      combined.push({
-        id: m.id,
-        rawDate: m.dateIso,
-        dateObj: pDate,
-        dateIso: m.dateIso,
-        dateDisplay: pDate ? formatGermanDate(pDate) : m.dateIso,
-        weekday: pDate ? getWeekdayShort(pDate) : '',
-        kwInfo: kw,
+      if (!foundResCol || !foundNameCol) return;
 
-        auftragsnummer: auftragsnummer,
-        ort: '–',
-        ressourcennummer: m.ressourcennummer,
+      for (let r = startRow; r <= maxRows; r++) {
+        const row = ws.getRow(r);
+        if (!row) continue;
+        let resVal = getCleanCellValue(row.getCell(foundResCol));
+        let nameVal = getCleanCellValue(row.getCell(foundNameCol));
+        if (!resVal) continue;
+        resVal = resVal.replace(/[,.]0+$/, "");
+        if (!nameVal) nameVal = `Mitarbeiter ${resVal}`;
 
-        name: stamm ? stamm.name : (m.ressourcennummer || 'Mitarbeiter'),
-        kategorie: 'Mitarbeiter',
-        isKnown: true,
-        isMitarbeiter: true,
+        if (!seenMap.has(resVal)) {
+          seenMap.set(resVal, nameVal);
+          staffList.push({
+            resource: resVal,
+            name: nameVal,
+            dept: ws.name
+          });
+          addedCount++;
+        }
+      }
+    });
 
-        stunden: displayHours,
-        leistung: leistung,
-        beschreibung: beschreibung,
-        preis: 0,
-        isManualAbsence: !isAbzug && !isArbeitszeitZuschlag,
-        isManualWork: isArbeitszeitZuschlag,
-        isManualCorrection: isAbzug,
-        absenceType: m.type
+    if (addedCount > 0) {
+      applyStaffList(staffList);
+      try {
+        localStorage.setItem(STORAGE_KEY_STAFF, JSON.stringify(staffList));
+      } catch (e) {}
+      console.log(`✅ ${addedCount} zusätzliche Mitarbeiter aus Referenzdatei extrahiert.`);
+    }
+
+    return addedCount;
+  }
+
+  if (btnChangeRef && inputRef) {
+    btnChangeRef.addEventListener("click", (e) => {
+      e.stopPropagation();
+      inputRef.click();
+    });
+  }
+
+  if (btnClearRef) {
+    btnClearRef.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Möchten Sie die gespeicherte Referenzdatei wirklich aus dem Browser löschen?")) return;
+      await deleteRefFileFromStorage();
+      state.refWorkbook = null;
+      state.refFileName = "";
+      state.currentRefSheet = "";
+      if (refFilename) refFilename.textContent = "";
+      if (selectRefSheet) selectRefSheet.innerHTML = "";
+      if (refFileInfo) refFileInfo.classList.add("hidden");
+      const dropContent = dropRef ? dropRef.querySelector(".drop-zone-content") : null;
+      if (dropContent) dropContent.classList.remove("hidden");
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Nicht geladen";
+        refStorageBadge.className = "badge badge-secondary";
+      }
+      if (configSection) configSection.classList.add("hidden");
+      showToast("Referenzdatei aus dem Browser gelöscht.");
+    });
+  }
+
+  const btnDownloadRef = document.getElementById("btn-download-ref");
+  if (btnDownloadRef) {
+    btnDownloadRef.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!state.refWorkbook) {
+        showToast("Keine Referenzdatei geladen.");
+        return;
+      }
+      try {
+        const buf = await state.refWorkbook.xlsx.writeBuffer();
+        const baseName = (state.refFileName || "Referenz_Stammdaten").replace(/\.[^/.]+$/, "");
+        downloadBuffer(buf, `${baseName}_AKTUALISIERT.xlsx`);
+        showToast("📥 Aktualisierte Referenzdatei wird heruntergeladen...");
+      } catch (err) {
+        console.error("Fehler beim Herunterladen der Referenzdatei:", err);
+        alert("Fehler beim Herunterladen der Referenzdatei: " + err.message);
+      }
+    });
+  }
+
+  if (btnChangeTgt && inputTgt) {
+    btnChangeTgt.addEventListener("click", (e) => {
+      e.stopPropagation();
+      inputTgt.click();
+    });
+  }
+
+  // Gespeicherte Referenzdatei & Mitarbeiter beim Start aus Browser-Speicher laden
+  restoreSavedReferenceFile();
+  loadStaffFromStorage();
+
+  function setupDropZone(dropZone, fileInput, onFileLoaded) {
+    if (!dropZone || !fileInput) return;
+
+    let dragCounter = 0;
+
+    dropZone.addEventListener("click", (e) => {
+      // Nicht auslösen, falls ein Button, Select, Label, Link oder das Info-Feld angeklickt wurde
+      if (
+        e.target.closest("button") ||
+        e.target.closest("select") ||
+        e.target.closest("option") ||
+        e.target.closest("label") ||
+        e.target.closest("a") ||
+        e.target.closest(".file-info")
+      ) {
+        return;
+      }
+      fileInput.click();
+    });
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files && fileInput.files.length > 0) {
+        onFileLoaded(fileInput.files[0]);
+        fileInput.value = "";
+      }
+    });
+
+    dropZone.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter++;
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = "copy";
+      }
+      dropZone.classList.add("dragover");
+    }, false);
+
+    dropZone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = "copy";
+      }
+      dropZone.classList.add("dragover");
+    }, false);
+
+    dropZone.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        dropZone.classList.remove("dragover");
+      }
+    }, false);
+
+    dropZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter = 0;
+      dropZone.classList.remove("dragover");
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        onFileLoaded(e.dataTransfer.files[0]);
+      }
+    }, false);
+  }
+
+  function populateSheetSelect(selectEl, worksheets) {
+    selectEl.innerHTML = "";
+    worksheets.forEach(ws => {
+      const opt = document.createElement("option");
+      opt.value = ws.name;
+      opt.textContent = `${ws.name} (${ws.rowCount} Zeilen)`;
+      selectEl.appendChild(opt);
+    });
+  }
+
+  selectRefSheet.addEventListener("change", async (e) => {
+    state.currentRefSheet = e.target.value;
+    await updateRefSheetInStorage(e.target.value);
+    extractStaffFromReferenceWorkbook(state.refWorkbook);
+    updateMapping();
+    if (state.targetWorkbook && state.currentTargetSheet) {
+      renderTimesheetMatrix();
+      populateFullTableFilters();
+      renderFullExcelTable();
+    }
+  });
+
+  selectTgtSheet.addEventListener("change", (e) => {
+    state.currentTargetSheet = e.target.value;
+    updateMapping();
+  });
+
+  function checkReadyForConfig() {
+    if (state.refWorkbook && state.targetWorkbook) {
+      updateMapping();
+      configSection.classList.remove("hidden");
+      configSection.scrollIntoView({ behavior: "smooth" });
+    }
+  }
+
+  // --- Spalten-Mapping ermitteln ---
+  function updateMapping() {
+    if (!state.refWorkbook || !state.targetWorkbook) return;
+    const refWs = state.refWorkbook.getWorksheet(state.currentRefSheet);
+    const tgtWs = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!refWs || !tgtWs) return;
+
+    const refHeaders = [];
+    const refHeaderRow = refWs.getRow(1);
+    refHeaderRow.eachCell((cell, colNum) => {
+      const extracted = WebExcelEngine.extractCellValue(cell.value, cell);
+      const val = extracted ? extracted.trim() : `Spalte ${getColLetter(colNum)}`;
+      refHeaders.push({ colNum, name: val });
+    });
+
+    const tgtHeaders = [];
+    const tgtHeaderRow = tgtWs.getRow(1);
+    tgtHeaderRow.eachCell((cell, colNum) => {
+      const extracted = WebExcelEngine.extractCellValue(cell.value, cell);
+      const val = extracted ? extracted.trim() : `Spalte ${getColLetter(colNum)}`;
+      tgtHeaders.push({ colNum, letter: getColLetter(colNum), name: val });
+    });
+
+    const mapping = [];
+    tgtHeaders.forEach(tgt => {
+      const tgtClean = tgt.name.toLowerCase().replace(/[^a-z0-9äöüß]/g, "");
+      let bestMatch = "";
+
+      for (const ref of refHeaders) {
+        const refClean = ref.name.toLowerCase().replace(/[^a-z0-9äöüß]/g, "");
+        if (tgtClean === refClean && tgtClean) {
+          bestMatch = ref.name;
+          break;
+        }
+      }
+      if (!bestMatch) {
+        for (const ref of refHeaders) {
+          const refClean = ref.name.toLowerCase().replace(/[^a-z0-9äöüß]/g, "");
+          if (tgtClean && refClean && (tgtClean.includes(refClean) || refClean.includes(tgtClean))) {
+            bestMatch = ref.name;
+            break;
+          }
+        }
+      }
+
+      // Spalten B, C und E sind standardmäßig angehakt, alle anderen abwählbar / optional
+      const isDefaultCol = ["B", "C", "E"].includes(tgt.letter.toUpperCase()) || [2, 3, 5].includes(tgt.colNum);
+      const isRessource = (tgt.letter.toUpperCase() === "C") || (tgt.colNum === 3) || ["ressource", "resource", "resour", "res-nr", "res_nr", "resnr", "personal", "personalnummer", "persnr"].some(k => tgt.name.toLowerCase().includes(k));
+      const isLeistung = (tgt.letter.toUpperCase() === "E") || (tgt.colNum === 5) || ["leistung", "leist", "leist-nr", "leist_nr", "leistnr"].some(k => tgt.name.toLowerCase().includes(k));
+
+      // Spezieller Match für Ressource <-> Personalnummer in Referenzdatei
+      if (!bestMatch && isRessource) {
+        for (const ref of refHeaders) {
+          const refClean = ref.name.toLowerCase().replace(/[^a-z0-9äöüß]/g, "");
+          if (["personalnummer", "persnr", "personal", "ressourcennummer", "ressource", "mitarbeiternummer", "mitarbeiternr"].some(k => refClean.includes(k))) {
+            bestMatch = ref.name;
+            break;
+          }
+        }
+      }
+
+      // Falls kein Match über Header-Namen gefunden wurde, nach gleicher Position/Buchstabe suchen
+      if (!bestMatch) {
+        for (const ref of refHeaders) {
+          if (ref.colNum === tgt.colNum || (ref.letter && ref.letter.toUpperCase() === tgt.letter.toUpperCase())) {
+            bestMatch = ref.name;
+            break;
+          }
+        }
+      }
+
+      mapping.push({
+        target_col_idx: tgt.colNum,
+        target_col_letter: tgt.letter,
+        target_col_name: tgt.name,
+        ref_col_name: bestMatch,
+        selected: isDefaultCol,
+        allow_empty: isLeistung,
+        pad_to_4: isRessource
       });
-    }
-
-    return combined;
-  }
-
-  function getFilteredDetailData() {
-    const { dateFrom, dateTo, category, search } = state.filters;
-    const searchLower = (search || '').trim().toLowerCase();
-    const allItems = getAllDetailItemsCombined();
-
-    return allItems.filter(item => {
-      if (dateFrom && item.dateIso && item.dateIso < dateFrom) return false;
-      if (dateTo && item.dateIso && item.dateIso > dateTo) return false;
-
-      if (category && item.kategorie) {
-        if (item.kategorie.toLowerCase() !== category.toLowerCase()) return false;
-      }
-
-      if (searchLower) {
-        const matchName = item.name && item.name.toLowerCase().includes(searchLower);
-        const matchOrder = item.auftragsnummer && item.auftragsnummer.toLowerCase().includes(searchLower);
-        const matchOrt = item.ort && item.ort.toLowerCase().includes(searchLower);
-        const matchRessource = item.ressourcennummer && item.ressourcennummer.toLowerCase().includes(searchLower);
-        const matchLeistung = item.leistung && item.leistung.toLowerCase().includes(searchLower);
-        const matchDesc = item.beschreibung && item.beschreibung.toLowerCase().includes(searchLower);
-
-        if (!matchName && !matchOrder && !matchOrt && !matchRessource && !matchLeistung && !matchDesc) {
-          return false;
-        }
-      }
-
-      return true;
     });
+
+    state.mapping = mapping;
+    renderMappingTable(mapping, refHeaders.map(h => h.name));
+    populateTimesheetColSelects(tgtHeaders);
+    populateFullTableFilters();
+    renderFullExcelTable();
   }
 
-  function sortData(list) {
-    const { field, asc } = state.sort;
-    const modifier = asc ? 1 : -1;
+  function renderMappingTable(mapping, refHeaderNames) {
+    mappingTbody.innerHTML = mapping.map((m, idx) => {
+      const isChecked = m.selected ? "checked" : "";
+      let optionsHtml = `<option value="">-- Nicht prüfen --</option>`;
+      refHeaderNames.forEach(h => {
+        const isSel = (h === m.ref_col_name) ? "selected" : "";
+        optionsHtml += `<option value="${escapeHtml(h)}" ${isSel}>${escapeHtml(h)}</option>`;
+      });
 
-    return [...list].sort((a, b) => {
-      let valA, valB;
-      switch (field) {
-        case 'date':
-          valA = a.dateIso || '';
-          valB = b.dateIso || '';
-          return valA.localeCompare(valB) * modifier;
-        case 'order':
-          valA = a.auftragsnummer || '';
-          valB = b.auftragsnummer || '';
-          return valA.localeCompare(valB) * modifier;
-        case 'ort':
-          valA = a.ort || '';
-          valB = b.ort || '';
-          return valA.localeCompare(valB, 'de') * modifier;
-        case 'name':
-          valA = a.name || '';
-          valB = b.name || '';
-          return valA.localeCompare(valB, 'de', { sensitivity: 'base' }) * modifier;
-        case 'category':
-          valA = a.kategorie || '';
-          valB = b.kategorie || '';
-          return valA.localeCompare(valB, 'de') * modifier;
-        case 'hours':
-          return (a.stunden - b.stunden) * modifier;
-        case 'service':
-          valA = a.leistung || '';
-          valB = b.leistung || '';
-          return valA.localeCompare(valB, 'de') * modifier;
-        case 'price':
-          return (a.preis - b.preis) * modifier;
-        default:
-          return 0;
-      }
-    });
-  }
-
-  function renderDetailTab() {
-    const filtered = getFilteredDetailData();
-    const sorted = sortData(filtered);
-    const totalCombinedCount = state.bewegungsdaten.length + state.manualEntries.length;
-
-    let sumStunden = 0;
-    let sumPreis = 0;
-    for (const item of sorted) {
-      sumStunden += item.stunden || 0;
-      sumPreis += item.preis || 0;
-    }
-
-    document.getElementById('kpiSumStunden').textContent = formatNumber(sumStunden, 2);
-    document.getElementById('kpiFilteredCount').textContent = sorted.length;
-    document.getElementById('kpiTotalRatio').textContent = `von ${totalCombinedCount} Gesamteinträgen`;
-    document.getElementById('kpiSumPreis').textContent = formatCurrency(sumPreis);
-
-    document.getElementById('tableResultCount').textContent = `(${sorted.length} Einträge)`;
-    document.getElementById('navCountDetail').textContent = sorted.length;
-
-    const foot = document.getElementById('detailTableFoot');
-    if (sorted.length > 0) {
-      foot.style.display = 'table-footer-group';
-      document.getElementById('footSumStunden').textContent = `${formatNumber(sumStunden, 2)} Std./Menge`;
-      document.getElementById('footSumPreis').textContent = formatCurrency(sumPreis);
-    } else {
-      foot.style.display = 'none';
-    }
-
-    const tbody = document.getElementById('detailTableBody');
-    if (sorted.length === 0) {
-      tbody.innerHTML = `
-        <tr class="empty-row">
-          <td colspan="10">
-            <div class="empty-state">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-              </svg>
-              <p>${totalCombinedCount === 0 ? 'Keine Bewegungsdaten geladen. Bitte lade eine Excel-Datei hoch oder klicke oben auf "Demo-Daten laden".' : 'Keine Datensätze entsprechen den aktuellen Filtern.'}</p>
-            </div>
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    tbody.innerHTML = sorted.map(item => {
-      let leistungBadge = escapeHtml(item.leistung);
-      if (item.isManualCorrection) {
-        leistungBadge = `<span class="badge-absence badge-korrektur">Korrektur (Abzug)</span> ${escapeHtml(item.leistung)}`;
-      } else if (item.isManualAbsence) {
-        leistungBadge = `<span class="badge-absence ${getAbsenceBadgeClass(item.absenceType)}">${escapeHtml(item.absenceType)}</span> ${escapeHtml(item.leistung)}`;
-      } else if (item.isManualWork) {
-        leistungBadge = `<span class="badge-absence badge-arbeit">Nachbuchung</span> ${escapeHtml(item.leistung)}`;
-      }
-
-      let hoursDisplay = '';
-      if (item.stunden < 0) {
-        hoursDisplay = `<span style="color: #dc2626; font-weight: 700;">-${formatNumber(Math.abs(item.stunden), 2)}</span>`;
-      } else {
-        hoursDisplay = `<span style="color: var(--primary); font-weight: 700;">${formatNumber(item.stunden, 2)}</span>`;
-      }
-
-      let actionHtml = '';
-      if (item.isManualAbsence || item.isManualWork || item.isManualCorrection) {
-        actionHtml = `
-          <div class="btn-action-group">
-            <button type="button" class="btn-action-sm btn-action-edit" onclick="window.openManualEntryModal('${escapeHtml(item.ressourcennummer)}', '${item.dateIso}')" title="Manuelle Buchung bearbeiten">✏️</button>
-            <button type="button" class="btn-action-sm btn-action-delete" onclick="window.deleteManualEntryDirect('${item.id}')" title="Manuelle Buchung löschen">🗑️</button>
-          </div>
-        `;
-      } else {
-        actionHtml = `
-          <div class="btn-action-group">
-            <button type="button" class="btn-action-sm btn-action-edit" onclick="window.editBewegungsdatenRow('${item.id}')" title="Arbeitszeit für diesen Eintrag anpassen">✏️ Ändern</button>
-            <button type="button" class="btn-action-sm btn-action-delete" onclick="window.deleteBewegungsdatenRow('${item.id}')" title="Fehleintrag aus Liste löschen">🗑️</button>
-          </div>
-        `;
-      }
+      const isAllowEmptyChecked = Boolean(m.allow_empty) ? "checked" : "";
 
       return `
         <tr>
           <td>
-            <span style="font-weight: 600;">${item.weekday ? item.weekday + ', ' : ''}${escapeHtml(item.dateDisplay)}</span>
+            <input type="checkbox" class="col-checkbox" data-idx="${idx}" ${isChecked}>
           </td>
           <td>
-            <span class="order-code">${escapeHtml(item.auftragsnummer)}</span>
+            <strong>${escapeHtml(m.target_col_name)}</strong>
+            <span class="diag-detail"> (Spalte ${m.target_col_letter})</span>
+          </td>
+          <td style="color: var(--text-muted); font-size: 1.1rem;">➔</td>
+          <td>
+            <select class="form-select ref-col-select" data-idx="${idx}">
+              ${optionsHtml}
+            </select>
           </td>
           <td>
-            ${item.ort && item.ort !== '–' ? `<span class="ort-tag">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-                <circle cx="12" cy="10" r="3"></circle>
-              </svg>
-              ${escapeHtml(item.ort)}
-            </span>` : '<span class="text-muted">–</span>'}
+            <label class="custom-control">
+              <input type="checkbox" class="allow-empty-checkbox" data-idx="${idx}" ${isAllowEmptyChecked}>
+              <span>Leere Zellen erlauben</span>
+            </label>
           </td>
-          <td>
-            <div class="res-name-box">
-              <span class="res-name">${escapeHtml(item.name)}</span>
-              <span class="res-id">${escapeHtml(item.ressourcennummer)}</span>
-            </div>
-          </td>
-          <td>
-            <span class="badge ${getCategoryBadgeClass(item.kategorie)}">
-              ${escapeHtml(item.kategorie)}
-            </span>
-          </td>
-          <td class="text-right">
-            ${hoursDisplay}
-          </td>
-          <td>${leistungBadge}</td>
-          <td style="max-width: 250px; font-size: 0.82rem; color: #475569;">${escapeHtml(item.beschreibung)}</td>
-          <td class="text-right">${formatCurrency(item.preis)}</td>
-          <td class="text-center">${actionHtml}</td>
         </tr>
       `;
-    }).join('');
-  }
+    }).join("");
 
-  // ==========================================================================
-  // 7. TAB 2: WOCHENÜBERSICHT (PERSONAL) & TAGES-MATRIX (Mo - So)
-  //    STRENG EINE ZEILE PRO MITARBEITER – ALLES IN DER TAGESZELLE
-  // ==========================================================================
-  function renderWochenTab() {
-    const selKw = document.getElementById('selectKalenderwoche').value || state.selectedKwKey;
-    state.selectedKwKey = selKw;
+    // Synchronisiere "Alle auswählen"-Checkbox
+    checkAllCols.checked = mapping.length > 0 && mapping.every(m => m.selected);
 
-    // 1. Bewegungsdaten für diese Woche (Kategorie 'Mitarbeiter')
-    const weekItems = state.bewegungsdaten.filter(item => {
-      const matchWeek = item.kwInfo && item.kwInfo.key === selKw;
-      return matchWeek && item.isMitarbeiter;
+    // Event Listener für Mapping-Tabelle
+    mappingTbody.querySelectorAll(".col-checkbox").forEach(cb => {
+      cb.addEventListener("change", (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        state.mapping[idx].selected = e.target.checked;
+        checkAllCols.checked = state.mapping.length > 0 && state.mapping.every(m => m.selected);
+      });
     });
 
-    // 2. Montag dieser KW bestimmen
-    let kwMonday = null;
-    if (weekItems.length > 0 && weekItems[0].kwInfo && weekItems[0].kwInfo.monday) {
-      kwMonday = new Date(weekItems[0].kwInfo.monday);
-    } else if (selKw) {
-      const match = selKw.match(/^(\d{4})-W(\d{2})$/);
-      if (match) {
-        const year = parseInt(match[1], 10);
-        const week = parseInt(match[2], 10);
-        const simple = new Date(Date.UTC(year, 0, 1 + (week - 1) * 7));
-        const dayNr = simple.getUTCDay() || 7;
-        simple.setUTCDate(simple.getUTCDate() + 4 - dayNr);
-        simple.setUTCDate(simple.getUTCDate() - 3);
-        kwMonday = simple;
+    mappingTbody.querySelectorAll(".ref-col-select").forEach(sel => {
+      sel.addEventListener("change", (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        state.mapping[idx].ref_col_name = e.target.value;
+        state.mapping[idx].selected = Boolean(e.target.value);
+        const rowCb = mappingTbody.querySelector(`.col-checkbox[data-idx="${idx}"]`);
+        if (rowCb) rowCb.checked = state.mapping[idx].selected;
+        checkAllCols.checked = state.mapping.length > 0 && state.mapping.every(m => m.selected);
+      });
+    });
+
+    mappingTbody.querySelectorAll(".allow-empty-checkbox").forEach(cb => {
+      cb.addEventListener("change", (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        state.mapping[idx].allow_empty = e.target.checked;
+      });
+    });
+  }
+
+  checkAllCols.addEventListener("change", (e) => {
+    const isChecked = e.target.checked;
+    state.mapping.forEach(m => { m.selected = isChecked; });
+    mappingTbody.querySelectorAll(".col-checkbox").forEach(cb => { cb.checked = isChecked; });
+  });
+
+  // --- Datumsprüfung Konfiguration & Status-Badge ---
+  const chkDateVal = document.getElementById("chk-date-validation");
+  const badgeDateStatus = document.getElementById("badge-date-status");
+  const inputDateWeeks = document.getElementById("input-date-weeks");
+  const dateControls = document.getElementById("date-check-controls");
+
+  function updateDateBadge() {
+    if (!chkDateVal) return;
+    if (!chkDateVal.checked) {
+      if (badgeDateStatus) {
+        badgeDateStatus.textContent = "Deaktiviert";
+        badgeDateStatus.className = "badge badge-leer-ok";
       }
+      if (dateControls) dateControls.style.opacity = "0.5";
+    } else {
+      const mode = document.querySelector('input[name="date-mode"]:checked')?.value || "weeks";
+      const w = inputDateWeeks ? inputDateWeeks.value : 3;
+      if (badgeDateStatus) {
+        badgeDateStatus.textContent = mode === "weeks" ? `Aktiv (Letzte ${w} Wochen)` : "Aktiv (Fester Zeitraum)";
+        badgeDateStatus.className = "badge badge-ok";
+      }
+      if (dateControls) dateControls.style.opacity = "1";
+    }
+  }
+
+  if (chkDateVal) {
+    chkDateVal.addEventListener("change", updateDateBadge);
+  }
+  if (inputDateWeeks) {
+    inputDateWeeks.addEventListener("input", updateDateBadge);
+  }
+  document.querySelectorAll('input[name="date-mode"]').forEach(r => {
+    r.addEventListener("change", updateDateBadge);
+  });
+
+  // --- Prüfung starten ---
+  btnStartCheck.addEventListener("click", () => {
+    const activeCols = state.mapping.filter(m => m.selected && m.ref_col_name);
+    const dateCheckOn = chkDateVal ? chkDateVal.checked : true;
+    if (activeCols.length === 0 && !dateCheckOn) {
+      alert("Bitte wählen Sie mindestens eine Spalte für den Abgleich aus.");
+      return;
     }
 
-    // Die 7 Tage der Woche aufbauen (Montag = 0, ..., Sonntag = 6)
-    const weekDays = [];
-    const dayNames = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
-    if (kwMonday) {
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(kwMonday);
-        d.setUTCDate(d.getUTCDate() + i);
-        const iso = formatDateIso(d);
-        const dayStr = String(d.getUTCDate()).padStart(2, '0') + '.' + String(d.getUTCMonth() + 1).padStart(2, '0') + '.';
-        weekDays.push({
-          index: i,
-          name: dayNames[i],
-          dateObj: d,
-          dateIso: iso,
-          labelShort: dayStr
-        });
+    btnStartCheck.disabled = true;
+    btnStartCheck.innerHTML = `<span class="icon">⏳</span> Prüfung läuft...`;
 
-        const th = document.getElementById(`thDay${i}`);
-        if (th) {
-          th.innerHTML = `${dayNames[i]}<br><span class="day-sub">${dayStr}</span>`;
+    setTimeout(() => {
+      runInspection();
+      btnStartCheck.disabled = false;
+      btnStartCheck.innerHTML = `<span class="icon">🚀</span> Prüfung starten`;
+    }, 50);
+  });
+
+  function runInspection(options = {}) {
+    const refWs = state.refWorkbook.getWorksheet(state.currentRefSheet);
+    const tgtWs = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+
+    // Datumsoptionen auslesen
+    const dateCheckEnabled = chkDateVal ? chkDateVal.checked : true;
+    const dateRangeMode = document.querySelector('input[name="date-mode"]:checked')?.value || "weeks";
+    const weeksVal = parseInt(document.getElementById("input-date-weeks")?.value, 10) || 3;
+    const startVal = document.getElementById("input-date-start")?.value || "";
+    const endVal = document.getElementById("input-date-end")?.value || "";
+
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    let minDate = null;
+    let maxDate = today;
+    let weeksInfo = `letzte ${weeksVal} Wochen`;
+
+    if (dateRangeMode === "custom" && (startVal || endVal)) {
+      minDate = startVal ? WebExcelEngine.parseDateValue(startVal) : new Date(Date.now() - 21 * 86400000);
+      maxDate = endVal ? WebExcelEngine.parseDateValue(endVal) : today;
+      if (minDate) minDate.setHours(0, 0, 0, 0);
+      if (maxDate) maxDate.setHours(23, 59, 59, 999);
+      const sDisp = minDate ? WebExcelEngine.formatDate(minDate) : "?";
+      const eDisp = maxDate ? WebExcelEngine.formatDate(maxDate) : "?";
+      weeksInfo = `Zeitraum von ${sDisp} bis ${eDisp}`;
+    } else {
+      minDate = new Date(Date.now() - weeksVal * 7 * 86400000);
+      minDate.setHours(0, 0, 0, 0);
+      weeksInfo = `letzte ${weeksVal} Wochen (ab ${WebExcelEngine.formatDate(minDate)})`;
+    }
+
+    // 1. Referenz-Indizes aufbauen
+    const colIndices = {};
+    state.mapping.forEach(m => {
+      if (!m.selected || !m.ref_col_name) return;
+
+      // Finde Spalten-Index in Referenz
+      let refColIdx = null;
+      refWs.getRow(1).eachCell((cell, colNum) => {
+        const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+        if (hVal === m.ref_col_name) {
+          refColIdx = colNum;
         }
-      }
-    }
+      });
 
-    // Einheitliche Mitarbeiter-Zuordnung: JEDER MITARBEITER ERHÄLT GENAU EINE ZEILE!
-    const empMap = new Map();
-
-    function getOrCreateEmp(ressourcennummer, fallbackName = '') {
-      const rNum = String(ressourcennummer || '').trim();
-      const stamm = lookupStammdaten(rNum);
-      const canonicalNum = stamm ? stamm.ressourcennummer : (normalizeResourceKey(rNum) || rNum);
-      const realName = stamm ? stamm.name : (fallbackName || rNum || 'Unbekannt');
-      const key = normalizeResourceKey(canonicalNum) || normalizeKey(realName);
-
-      if (!empMap.has(key)) {
-        empMap.set(key, {
-          ressourcennummer: canonicalNum,
-          name: realName,
-          kategorie: stamm ? stamm.kategorie : 'Mitarbeiter',
-          workHours: 0,
-          absenceHours: 0,
-          totalHours: 0,
-          workHoursByDay: [0, 0, 0, 0, 0, 0, 0],
-          absenceByDay: [null, null, null, null, null, null, null],
-          manualWorkByDay: [null, null, null, null, null, null, null],
-          manualCorrectionByDay: [null, null, null, null, null, null, null],
-          absenceList: [],
-          detailsByDay: [[], [], [], [], [], [], []],
-          datesSet: new Set(),
-          orteSet: new Set(),
-          absenceTypesSet: new Set()
-        });
-      }
-      return empMap.get(key);
-    }
-
-    // A. Alle Mitarbeiter aus den Stammdaten vorinitialisieren
-    for (const s of state.stammdaten) {
-      if (s.kategorie && s.kategorie.trim().toLowerCase() === 'mitarbeiter') {
-        getOrCreateEmp(s.ressourcennummer, s.name);
-      }
-    }
-
-    // B. Reguläre Arbeitsstunden aus Bewegungsdaten zuordnen
-    for (const item of weekItems) {
-      const emp = getOrCreateEmp(item.ressourcennummer, item.name);
-      const hours = item.stunden || 0;
-      emp.workHours += hours;
-      emp.totalHours += hours;
-
-      if (item.dateIso) {
-        emp.datesSet.add(item.dateIso);
-      }
-      if (item.ort) {
-        emp.orteSet.add(item.ort);
-      }
-
-      if (item.dateObj) {
-        const foundIdx = weekDays.findIndex(wd => wd.dateIso === item.dateIso);
-        if (foundIdx !== -1) {
-          emp.workHoursByDay[foundIdx] += hours;
-          emp.detailsByDay[foundIdx].push(item);
-        }
-      }
-    }
-
-    // C. Manuelle Einträge (Arbeitszeit-Nachbuchung, Korrektur-Abzug oder Abwesenheiten wie Krank/Urlaub/Überstunden)
-    const isRealStamm = state.stammdaten.length > 0 && !state.stammdatenFilename.toLowerCase().includes('demo') && !state.stammdatenFilename.toLowerCase().includes('muster');
-    for (const m of state.manualEntries) {
-      if (isRealStamm && ((m.id && m.id.startsWith('demo_')) || (m.ressourcennummer && m.ressourcennummer.startsWith('M00')))) {
-        continue;
-      }
-      const dayIdx = weekDays.findIndex(wd => wd.dateIso === m.dateIso);
-      if (dayIdx !== -1) {
-        // Mitarbeiter ermitteln – fließt strikt in dieselbe Zeile!
-        const emp = getOrCreateEmp(m.ressourcennummer);
-        const isAbzug = (m.type === 'Arbeitszeit-Abzug' || String(m.type).toLowerCase().includes('abzug') || String(m.type).toLowerCase().includes('kürzung'));
-        const isArbeitszeitZuschlag = !isAbzug && (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
-
-        if (isAbzug) {
-          // Gilt als ARBEITSZEIT-KORREKTUR (Abzug von zuviel erfassten Stunden)
-          const deduction = Math.abs(Number(m.stunden) || 0);
-          emp.workHours = Math.max(0, emp.workHours - deduction);
-          emp.totalHours = Math.max(0, emp.totalHours - deduction);
-          emp.workHoursByDay[dayIdx] = Math.max(0, emp.workHoursByDay[dayIdx] - deduction);
-          emp.manualCorrectionByDay[dayIdx] = m;
-          emp.datesSet.add(m.dateIso);
-
-          emp.detailsByDay[dayIdx].push({
-            auftragsnummer: 'Korrektur (Abzug)',
-            ort: '',
-            stunden: -deduction,
-            leistung: 'Arbeitszeit-Abzug' + (m.note ? `: ${m.note}` : '')
-          });
-        } else if (isArbeitszeitZuschlag) {
-          // Gilt als REGULÄRE ARBEITSZEIT (Nachbuchung fehlender Stunden)
-          emp.workHours += m.stunden;
-          emp.totalHours += m.stunden;
-          emp.workHoursByDay[dayIdx] += m.stunden;
-          emp.manualWorkByDay[dayIdx] = m;
-          emp.datesSet.add(m.dateIso);
-
-          emp.detailsByDay[dayIdx].push({
-            auftragsnummer: 'Nachbuchung',
-            ort: '',
-            stunden: m.stunden,
-            leistung: 'Arbeitszeit (Nachbuchung)' + (m.note ? `: ${m.note}` : '')
-          });
-        } else {
-          // Gilt als SONDERZEIT / ABWESENHEIT (Krank, Urlaub, Überstundenabbau, etc.)
-          emp.absenceByDay[dayIdx] = m;
-          emp.absenceHours += m.stunden;
-          emp.totalHours += m.stunden;
-          emp.datesSet.add(m.dateIso);
-          emp.absenceTypesSet.add(m.type);
-
-          emp.absenceList.push({
-            dayIdx: dayIdx,
-            dayName: weekDays[dayIdx].name,
-            dateDisplay: weekDays[dayIdx].labelShort,
-            dateIso: m.dateIso,
-            type: m.type,
-            stunden: m.stunden,
-            note: m.note || ''
-          });
-        }
-      }
-    }
-
-    const allEmployees = Array.from(empMap.values());
-    allEmployees.sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base' }));
-
-    for (const emp of allEmployees) {
-      emp.absenceList.sort((a, b) => a.dayIdx - b.dayIdx);
-    }
-
-    // Gesamtsummen & Überstunden / Fehlzeiten berechnen (über alle Mitarbeiter der Woche)
-    let kwTotalHours = 0;
-    let kwTotalWorkHours = 0;
-    let kwTotalOvertimeHours = 0;
-    let kwTotalAbsenceHours = 0;
-    const dayTotals = [0, 0, 0, 0, 0, 0, 0];
-
-    for (const emp of allEmployees) {
-      emp.overtimeHours = 0;
-      emp.overtimeByDay = [0, 0, 0, 0, 0, 0, 0];
-      emp.missingByDay = [0, 0, 0, 0, 0, 0, 0];
-      emp.unclarifiedDays = [];
-
-      kwTotalHours += emp.totalHours;
-      kwTotalWorkHours += emp.workHours;
-      kwTotalAbsenceHours += emp.absenceHours;
-
-      for (let d = 0; d < 7; d++) {
-        // Tagessumme Personal summiert STRIKT NUR die tatsächliche Arbeitszeit (keine Abwesenheiten/Sonderzeiten)
-        const dWork = emp.workHoursByDay[d];
-        dayTotals[d] += dWork;
-
-        const targetH = getDailyTargetHours(d);
-        const absH = emp.absenceByDay[d] ? (emp.absenceByDay[d].stunden || 0) : 0;
-        const totalRec = dWork + absH;
-
-        // 1. Überstunden: Alles über 8h (Mo-Do), über 7h (Fr) und Samstags/Sonntags (>0h)
-        if (dWork > targetH) {
-          const ot = dWork - targetH;
-          emp.overtimeByDay[d] = ot;
-          emp.overtimeHours += ot;
-        }
-
-        // 2. Unterstunden / Fehlzeiten: Mo-Fr wenn weniger gearbeitet wurde (totalRec < targetH)
-        // Nur prüfen für Mitarbeiter, die in dieser Woche aktiv sind
-        if (d < 5 && (emp.totalHours > 0 || emp.datesSet.size > 0)) {
-          if (totalRec < targetH) {
-            const missing = targetH - totalRec;
-            emp.missingByDay[d] = missing;
-            if (weekDays[d]) {
-              emp.unclarifiedDays.push({
-                dayIdx: d,
-                dateIso: weekDays[d].dateIso,
-                dayName: weekDays[d].name,
-                dateDisplay: weekDays[d].labelShort,
-                workH: dWork,
-                absH: absH,
-                targetH: targetH,
-                missingH: missing
-              });
+      if (refColIdx) {
+        const vals = [];
+        for (let r = 2; r <= refWs.rowCount; r++) {
+          const cell = refWs.getRow(r).getCell(refColIdx);
+          const norm = WebExcelEngine.normalizeCellValue(cell.value, cell);
+          if (norm) {
+            vals.push(norm);
+            if (m.pad_to_4 || /^\d{1,4}$/.test(norm)) {
+              vals.push(WebExcelEngine.padNumber(norm, 4));
+              const unpadded = norm.replace(/^0+/, "");
+              if (unpadded) vals.push(unpadded);
             }
           }
         }
+        colIndices[m.target_col_name] = new WebExcelEngine.ColumnIndex(vals);
       }
+    });
 
-      kwTotalOvertimeHours += emp.overtimeHours;
-    }
+    // 2. Prüfdatei analysieren
+    const results = [];
+    const stats = {
+      total_cells: 0,
+      ok: 0,
+      zahlendreher: 0,
+      zifferntausch: 0,
+      tippfehler: 0,
+      ziffer_zuviel_zuwenig: 0,
+      nicht_existent: 0,
+      leer: 0,
+      datum_warnung: 0,
+      total_errors: 0
+    };
 
-    // Filterung der Anzeige: Alle Stammdaten-Mitarbeiter ODER nur aktive (mit Buchungen/Sonderzeiten)
-    const showAll = state.showAllEmployeesInWeekly !== false; // Standardmäßig alle anzeigen
-    const searchFilter = (state.weeklySearch || '').trim().toLowerCase();
+    state.appliedCorrections = state.appliedCorrections || {};
 
-    const activeWeekEmployees = allEmployees.filter(emp => {
-      // 1. Aktivitäts-Filter
-      if (!showAll) {
-        if (!(emp.totalHours > 0 || emp.datesSet.size > 0)) {
-          return false;
+    const colAHeader = tgtWs.getRow(1).getCell(1);
+    const colAName = WebExcelEngine.extractCellValue(colAHeader.value, colAHeader).trim() || "Datum";
+
+    for (let r = 2; r <= tgtWs.rowCount; r++) {
+      const row = tgtWs.getRow(r);
+
+      // Datumsprüfung Spalte A
+      if (dateCheckEnabled) {
+        const cellCoordA = `A${r}`;
+        const cellKeyA = `${r}_1`;
+        const cellA = row.getCell(1);
+        const parsedD = WebExcelEngine.parseDateValue(cellA.value, cellA);
+        const rawDateStr = WebExcelEngine.extractCellValue(cellA.value, cellA).trim();
+        const dispValA = parsedD ? WebExcelEngine.formatDate(parsedD) : (rawDateStr || "");
+        stats.total_cells++;
+
+        const todayStr = WebExcelEngine.formatDate(new Date());
+
+        if (cellA.value === null || cellA.value === undefined || rawDateStr === "") {
+          stats.total_errors++;
+          stats.leer++;
+          stats.datum_warnung++;
+          results.push({
+            id: cellKeyA,
+            row: r,
+            col_idx: 1,
+            col_letter: "A",
+            col_name: colAName,
+            ref_col_name: "",
+            cell: cellCoordA,
+            original_value: "",
+            current_value: "",
+            status: "DATUM_WARNUNG",
+            status_label: "Datum eventuell falsch",
+            badge_class: "badge-tippfehler",
+            score: 0.0,
+            suggestion: todayStr,
+            detail: "Datum in Spalte A fehlt komplett",
+            candidates: [{ value: todayStr, detail: "Heutiges Datum" }],
+            is_corrected: false
+          });
+        } else if (!parsedD) {
+          stats.total_errors++;
+          stats.tippfehler++;
+          stats.datum_warnung++;
+          results.push({
+            id: cellKeyA,
+            row: r,
+            col_idx: 1,
+            col_letter: "A",
+            col_name: colAName,
+            ref_col_name: "",
+            cell: cellCoordA,
+            original_value: dispValA,
+            current_value: dispValA,
+            status: "DATUM_WARNUNG",
+            status_label: "Datum eventuell falsch",
+            badge_class: "badge-tippfehler",
+            score: 0.0,
+            suggestion: todayStr,
+            detail: `Ungültiges Datumsformat oder Zahl ('${dispValA}')`,
+            candidates: [{ value: todayStr, detail: "Heutiges Datum" }],
+            is_corrected: false
+          });
+        } else if (minDate && parsedD < minDate) {
+          stats.total_errors++;
+          stats.tippfehler++;
+          stats.datum_warnung++;
+          const daysDiff = Math.round((startOfToday - parsedD) / (86400000));
+          results.push({
+            id: cellKeyA,
+            row: r,
+            col_idx: 1,
+            col_letter: "A",
+            col_name: colAName,
+            ref_col_name: "",
+            cell: cellCoordA,
+            original_value: dispValA,
+            current_value: dispValA,
+            status: "DATUM_WARNUNG",
+            status_label: "Datum eventuell falsch",
+            badge_class: "badge-tippfehler",
+            score: 0.5,
+            suggestion: todayStr,
+            detail: `Datum ${dispValA} liegt ${daysDiff} Tage zurück (erwartet: ${weeksInfo})`,
+            candidates: [{ value: todayStr, detail: "Heutiges Datum" }],
+            is_corrected: false
+          });
+        } else if (maxDate && parsedD > maxDate) {
+          stats.total_errors++;
+          stats.tippfehler++;
+          stats.datum_warnung++;
+          const daysDiff = Math.round((parsedD - today) / (86400000));
+          results.push({
+            id: cellKeyA,
+            row: r,
+            col_idx: 1,
+            col_letter: "A",
+            col_name: colAName,
+            ref_col_name: "",
+            cell: cellCoordA,
+            original_value: dispValA,
+            current_value: dispValA,
+            status: "DATUM_WARNUNG",
+            status_label: "Datum eventuell falsch",
+            badge_class: "badge-tippfehler",
+            score: 0.5,
+            suggestion: todayStr,
+            detail: `Datum ${dispValA} liegt in der Zukunft (+${daysDiff} Tage)`,
+            candidates: [{ value: todayStr, detail: "Heutiges Datum" }],
+            is_corrected: false
+          });
+        } else {
+          stats.ok++;
+          results.push({
+            id: cellKeyA,
+            row: r,
+            col_idx: 1,
+            col_letter: "A",
+            col_name: colAName,
+            ref_col_name: "",
+            cell: cellCoordA,
+            original_value: dispValA,
+            current_value: dispValA,
+            status: "OK",
+            status_label: "Gültig",
+            badge_class: "badge-ok",
+            score: 1.0,
+            suggestion: dispValA,
+            detail: `Aktuelles Datum (${dispValA})`,
+            candidates: [],
+            is_corrected: false
+          });
         }
       }
-      // 2. Wochen-Suchfilter
-      if (searchFilter) {
-        const matchName = emp.name && emp.name.toLowerCase().includes(searchFilter);
-        const matchNr = emp.ressourcennummer && emp.ressourcennummer.toLowerCase().includes(searchFilter);
-        if (!matchName && !matchNr) return false;
+
+      state.mapping.forEach(m => {
+        if (!m.selected || !m.ref_col_name) return;
+        // Wenn Datumsprüfung aktiv ist, Spalte A nicht nochmals gegen Referenzpool abgleichen
+        if (dateCheckEnabled && (m.target_col_idx === 1 || m.target_col_letter === "A")) return;
+
+        const index = colIndices[m.target_col_name];
+        if (!index) return;
+
+        const cellCoord = `${m.target_col_letter}${r}`;
+        const cellKey = `${r}_${m.target_col_idx}`;
+        const cell = row.getCell(m.target_col_idx);
+        const origRaw = WebExcelEngine.extractCellValue(cell.value, cell);
+        const valStr = WebExcelEngine.normalizeCellValue(cell.value, cell);
+        const origText = (origRaw && !origRaw.toLowerCase().includes("object")) ? origRaw.trim() : (valStr || "");
+        stats.total_cells++;
+
+        const allowEmpty = Boolean(m.allow_empty);
+
+        if (!valStr) {
+          if (allowEmpty) {
+            stats.ok++;
+            results.push({
+              id: cellKey,
+              row: r,
+              col_idx: m.target_col_idx,
+              col_letter: m.target_col_letter,
+              col_name: m.target_col_name,
+              ref_col_name: m.ref_col_name,
+              cell: cellCoord,
+              original_value: origText,
+              current_value: "",
+              status: "OK_LEER",
+              status_label: "Leer (erlaubt)",
+              badge_class: "badge-leer-ok",
+              score: 1.0,
+              suggestion: "",
+              detail: "Feld ist leer (optional, kein Fehler)",
+              candidates: [],
+              is_corrected: false
+            });
+          } else {
+            stats.leer++;
+            stats.total_errors++;
+            results.push({
+              id: cellKey,
+              row: r,
+              col_idx: m.target_col_idx,
+              col_letter: m.target_col_letter,
+              col_name: m.target_col_name,
+              ref_col_name: m.ref_col_name,
+              cell: cellCoord,
+              original_value: origText,
+              current_value: "",
+              status: "LEER",
+              status_label: "Pflichtfeld leer",
+              badge_class: "badge-leer",
+              score: 0.0,
+              suggestion: "",
+              detail: "Zelle ist leer, obwohl Pflichtfeld",
+              candidates: [],
+              is_corrected: false
+            });
+          }
+          return;
+        }
+
+        const targetToCheck = m.pad_to_4 ? WebExcelEngine.padNumber(valStr, 4) : valStr;
+        const unpaddedTarget = valStr.replace(/^0+/, "");
+        const neededPadding = (targetToCheck !== valStr);
+        const isOk = index.contains(targetToCheck) || index.contains(valStr) || (unpaddedTarget && index.contains(unpaddedTarget));
+
+        if (isOk) {
+          stats.ok++;
+          if (m.pad_to_4 && neededPadding) {
+            // Automatisch für den 4-stelligen Export mit 0000 vormerken, aber NICHT als Fehler anzeigen:
+            state.appliedCorrections[cellKey] = targetToCheck;
+            results.push({
+              id: cellKey,
+              row: r,
+              col_idx: m.target_col_idx,
+              col_letter: m.target_col_letter,
+              col_name: m.target_col_name,
+              ref_col_name: m.ref_col_name,
+              cell: cellCoord,
+              original_value: origText,
+              current_value: targetToCheck,
+              status: "OK",
+              status_label: "Gültig",
+              badge_class: "badge-ok",
+              score: 1.0,
+              suggestion: targetToCheck,
+              detail: `Gültige Ressource (wird beim Speichern automatisch 4-stellig als '${targetToCheck}' formatiert)`,
+              candidates: [],
+              is_corrected: false
+            });
+          } else {
+            results.push({
+              id: cellKey,
+              row: r,
+              col_idx: m.target_col_idx,
+              col_letter: m.target_col_letter,
+              col_name: m.target_col_name,
+              ref_col_name: m.ref_col_name,
+              cell: cellCoord,
+              original_value: origText,
+              current_value: valStr,
+              status: "OK",
+              status_label: "Gültig",
+              badge_class: "badge-ok",
+              score: 1.0,
+              suggestion: valStr,
+              detail: "Exakte Übereinstimmung mit Referenz",
+              candidates: [],
+              is_corrected: false
+            });
+          }
+        } else {
+          stats.total_errors++;
+          const candidates = index.findCandidates(targetToCheck);
+
+          if (candidates.length > 0) {
+            const best = candidates[0];
+            let lbl = "Tippfehler";
+            let bclass = "badge-tippfehler";
+
+            if (best.type === "ZAHLENDREHER") {
+              stats.zahlendreher++;
+              lbl = "Zahlendreher";
+              bclass = "badge-zahlendreher";
+            } else if (best.type === "ZIFFERENTAUSCH") {
+              stats.zifferntausch++;
+              lbl = "Zifferntausch";
+              bclass = "badge-zifferntausch";
+            } else if (best.type === "TIPPFEHLER") {
+              stats.tippfehler++;
+              lbl = "Tippfehler (1 Ziffer)";
+              bclass = "badge-tippfehler";
+            } else if (best.type === "ZIFFER_ZUVIEL" || best.type === "ZIFFER_FEHLT") {
+              stats.ziffer_zuviel_zuwenig++;
+              lbl = "Ziffer zuviel/fehlt";
+              bclass = "badge-tippfehler";
+            } else if (best.type === "NAECHSTE_ALTERNATIVE") {
+              stats.nicht_existent++;
+              lbl = "Falscher Wert (Alternative)";
+              bclass = "badge-fehler";
+            }
+
+            results.push({
+              id: cellKey,
+              row: r,
+              col_idx: m.target_col_idx,
+              col_letter: m.target_col_letter,
+              col_name: m.target_col_name,
+              ref_col_name: m.ref_col_name,
+              cell: cellCoord,
+              original_value: origText,
+              current_value: valStr,
+              status: best.type,
+              status_label: lbl,
+              badge_class: bclass,
+              score: best.score,
+              suggestion: best.value,
+              detail: best.detail,
+              candidates: candidates,
+              is_corrected: false
+            });
+          } else {
+            stats.nicht_existent++;
+            results.push({
+              id: cellKey,
+              row: r,
+              col_idx: m.target_col_idx,
+              col_letter: m.target_col_letter,
+              col_name: m.target_col_name,
+              ref_col_name: m.ref_col_name,
+              cell: cellCoord,
+              original_value: origText,
+              current_value: valStr,
+              status: "NICHT_EXISTENT",
+              status_label: "Nicht in Stammdaten",
+              badge_class: "badge-fehler",
+              score: 0.0,
+              suggestion: "",
+              detail: "Nummer existiert nicht in der Referenzspalte",
+              candidates: [],
+              is_corrected: false
+            });
+          }
+        }
+      });
+    }
+
+    state.allResults = results;
+    updateStats(stats);
+    updateFilterCounts(results);
+    renderResultsTable();
+    renderTimesheetMatrix();
+    populateFullTableFilters();
+    renderFullExcelTable();
+
+    resultsSection.classList.remove("hidden");
+    if (!options.skipScroll) {
+      resultsSection.scrollIntoView({ behavior: "smooth" });
+    }
+    if (!options.skipToast) {
+      showToast(`Prüfung abgeschlossen: ${stats.total_errors} Abweichungen gefunden.`);
+    }
+  }
+
+  // --- Statistiken aktualisieren ---
+  function updateStats(stats) {
+    document.getElementById("stat-total").textContent = stats.total_cells.toLocaleString("de-DE");
+    document.getElementById("stat-ok").textContent = stats.ok.toLocaleString("de-DE");
+    document.getElementById("stat-zahlendreher").textContent = (stats.zahlendreher + stats.zifferntausch).toLocaleString("de-DE");
+    document.getElementById("stat-tippfehler").textContent = (stats.tippfehler + stats.ziffer_zuviel_zuwenig).toLocaleString("de-DE");
+    document.getElementById("stat-fehler").textContent = (stats.nicht_existent + stats.leer).toLocaleString("de-DE");
+  }
+
+  function updateFilterCounts(results) {
+    const isError = (r) => (r.status !== "OK" && r.status !== "OK_LEER");
+    const total = results.length;
+    const errors = results.filter(isError).length;
+    const zd = results.filter(r => r.status === "ZAHLENDREHER" || r.status === "ZIFFERENTAUSCH").length;
+    const tp = results.filter(r => r.status === "TIPPFEHLER" || r.status.startsWith("ZIFFER_")).length;
+    const ne = results.filter(r => r.status === "NICHT_EXISTENT" || r.status === "LEER" || r.status === "NAECHSTE_ALTERNATIVE").length;
+    const datum = results.filter(r => r.status === "DATUM_WARNUNG").length;
+    const corr = results.filter(r => r.is_corrected).length;
+
+    document.getElementById("count-all").textContent = total;
+    document.getElementById("count-errors").textContent = errors;
+    document.getElementById("count-zd").textContent = zd;
+    document.getElementById("count-tp").textContent = tp;
+    document.getElementById("count-ne").textContent = ne;
+    const countDatumEl = document.getElementById("count-datum");
+    if (countDatumEl) countDatumEl.textContent = datum;
+    document.getElementById("count-corr").textContent = corr;
+
+    if (tabBadgeErrors) {
+      tabBadgeErrors.textContent = `${errors} Abweichungen`;
+    }
+    if (tabBadgeTotalRows && state.targetWorkbook && state.currentTargetSheet) {
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      const totalDataRows = ws ? Math.max(0, ws.rowCount - 1) : 0;
+      tabBadgeTotalRows.textContent = `${totalDataRows} Zeilen`;
+    }
+  }
+
+  // --- Filter Event Listener ---
+  filterPills.querySelectorAll(".pill").forEach(p => {
+    p.addEventListener("click", () => {
+      filterPills.querySelectorAll(".pill").forEach(el => el.classList.remove("active"));
+      p.classList.add("active");
+      state.currentFilter = p.dataset.filter;
+      renderResultsTable();
+    });
+  });
+
+  tableSearchInput.addEventListener("input", (e) => {
+    state.searchQuery = e.target.value.toLowerCase().trim();
+    renderResultsTable();
+  });
+
+  // --- Referenzdatei: Wert-Prüfung & Dynamisches Hinzufügen neuer Nummern ---
+  function isValueInReferenceColumn(refColName, val) {
+    if (!state.refWorkbook || !val) return false;
+    const clean = String(val).trim();
+    if (!clean) return false;
+
+    let targetWs = null;
+    let targetColIdx = null;
+
+    if (state.currentRefSheet) {
+      targetWs = state.refWorkbook.getWorksheet(state.currentRefSheet);
+    }
+    if (!targetWs && state.refWorkbook.worksheets.length > 0) {
+      targetWs = state.refWorkbook.worksheets[0];
+    }
+
+    if (targetWs) {
+      targetWs.getRow(1).eachCell((cell, colNum) => {
+        const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+        if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+          targetColIdx = colNum;
+        }
+      });
+    }
+
+    if (!targetColIdx) {
+      for (const ws of state.refWorkbook.worksheets) {
+        ws.getRow(1).eachCell((cell, colNum) => {
+          const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+          if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+            targetWs = ws;
+            targetColIdx = colNum;
+          }
+        });
+        if (targetColIdx) break;
+      }
+    }
+
+    if (!targetWs || !targetColIdx) return false;
+
+    const maxRows = Math.max(targetWs.rowCount || 0, targetWs.actualRowCount || 0);
+    const isNum = /^\d+$/.test(clean);
+    const numInt = isNum ? parseInt(clean, 10) : null;
+
+    for (let r = 2; r <= maxRows; r++) {
+      const cell = targetWs.getRow(r).getCell(targetColIdx);
+      const cv = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+      if (!cv) continue;
+      if (cv === clean) return true;
+      if (isNum && /^\d+$/.test(cv) && parseInt(cv, 10) === numInt) return true;
+    }
+    return false;
+  }
+
+  async function addNumberToReferenceFile(refColName, newNumber, optStaffName = null) {
+    try {
+      if (!state.refWorkbook) {
+        alert("Keine Referenzdatei geladen. Bitte laden Sie zuerst eine Referenzdatei in Schritt 1.");
+        return false;
+      }
+
+      const cleanNum = String(newNumber || "").trim();
+      if (!cleanNum) {
+        alert("Bitte geben Sie eine gültige Nummer ein.");
+        return false;
+      }
+
+      // 1. Arbeitsblatt und Spalte ermitteln
+      let targetWs = null;
+      let targetColIdx = null;
+      let targetNameColIdx = null;
+
+      if (state.currentRefSheet) {
+        targetWs = state.refWorkbook.getWorksheet(state.currentRefSheet);
+      }
+      if (!targetWs && state.refWorkbook.worksheets.length > 0) {
+        targetWs = state.refWorkbook.worksheets[0];
+      }
+
+      if (targetWs) {
+        targetWs.getRow(1).eachCell((cell, colNum) => {
+          const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+          if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+            targetColIdx = colNum;
+          }
+          if (["name", "mitarbeiter", "person", "bezeichnung"].some(k => hVal.toLowerCase().includes(k))) {
+            targetNameColIdx = colNum;
+          }
+        });
+      }
+
+      if (!targetColIdx) {
+        for (const ws of state.refWorkbook.worksheets) {
+          ws.getRow(1).eachCell((cell, colNum) => {
+            const hVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+            if (refColName && hVal.toLowerCase() === refColName.toLowerCase()) {
+              targetWs = ws;
+              targetColIdx = colNum;
+            }
+          });
+          if (targetColIdx) break;
+        }
+      }
+
+      if (!targetColIdx && targetWs) {
+        const headerCount = Math.max(targetWs.columnCount || 0, targetWs.actualColumnCount || 0, 1);
+        targetColIdx = headerCount + 1;
+        targetWs.getRow(1).getCell(targetColIdx).value = refColName || "Stammdaten";
+      }
+
+      if (!targetWs || !targetColIdx) {
+        alert(`Konnte die Spalte "${refColName}" in der Referenzdatei nicht lokalisieren.`);
+        return false;
+      }
+
+      const isResourceCol = /ressource|personal|pers|mitarbeiter|worker/i.test(refColName || "");
+
+      // 2. Prüfen, ob die Nummer schon in dieser Spalte existiert
+      const maxRows = Math.max(targetWs.rowCount || 0, targetWs.actualRowCount || 0, (targetWs._rows ? targetWs._rows.length : 0));
+      let alreadyExists = false;
+      let emptyRowIdx = null;
+
+      for (let r = 2; r <= maxRows; r++) {
+        const cell = targetWs.getRow(r).getCell(targetColIdx);
+        const cellVal = WebExcelEngine.extractCellValue(cell.value, cell).trim();
+        if (!cellVal && !emptyRowIdx) {
+          emptyRowIdx = r;
+        }
+        if (cellVal === cleanNum || (/^\d+$/.test(cellVal) && /^\d+$/.test(cleanNum) && parseInt(cellVal, 10) === parseInt(cleanNum, 10))) {
+          alreadyExists = true;
+          break;
+        }
+      }
+
+      // 3. Eintragen
+      if (!alreadyExists) {
+        const insertRowIdx = emptyRowIdx || (maxRows + 1);
+        const row = targetWs.getRow(insertRowIdx);
+        const cell = row.getCell(targetColIdx);
+
+        if (/^\d{1,4}$/.test(cleanNum) && isResourceCol) {
+          cell.value = WebExcelEngine.padNumber(cleanNum, 4);
+          cell.numFmt = "0000";
+        } else if (/^\d+$/.test(cleanNum) && cleanNum.length < 10 && !cleanNum.startsWith("0")) {
+          cell.value = parseInt(cleanNum, 10);
+        } else {
+          cell.value = cleanNum;
+        }
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+
+        if (optStaffName && targetNameColIdx) {
+          const nameCell = row.getCell(targetNameColIdx);
+          nameCell.value = optStaffName;
+        }
+      }
+
+      // 4. Falls Mitarbeiter-Spalte oder Mitarbeiter-Name angegeben:
+      if (isResourceCol || optStaffName) {
+        const staffWs = state.refWorkbook.worksheets.find(w => /personal|mitarbeiter|stamm/i.test(w.name) && w !== targetWs);
+        if (staffWs) {
+          let sResCol = 1, sNameCol = 2;
+          staffWs.getRow(1).eachCell((cell, colNum) => {
+            const hVal = WebExcelEngine.extractCellValue(cell.value, cell).toLowerCase();
+            if (/personal|pers|ressource|mitarbeiter/i.test(hVal)) sResCol = colNum;
+            if (/name|bezeichnung/i.test(hVal)) sNameCol = colNum;
+          });
+          const sMax = Math.max(staffWs.rowCount || 0, staffWs.actualRowCount || 0);
+          let sFound = false;
+          for (let r = 2; r <= sMax; r++) {
+            const c = staffWs.getRow(r).getCell(sResCol);
+            const cv = WebExcelEngine.extractCellValue(c.value, c).trim();
+            if (cv === cleanNum || (/^\d+$/.test(cv) && /^\d+$/.test(cleanNum) && parseInt(cv, 10) === parseInt(cleanNum, 10))) {
+              sFound = true;
+              break;
+            }
+          }
+          if (!sFound) {
+            const newStaffRow = staffWs.getRow(sMax + 1);
+            newStaffRow.getCell(sResCol).value = /^\d{1,4}$/.test(cleanNum) ? WebExcelEngine.padNumber(cleanNum, 4) : cleanNum;
+            if (optStaffName) newStaffRow.getCell(sNameCol).value = optStaffName;
+          }
+        }
+
+        const staffDisplayName = optStaffName || getStaffName(cleanNum) || `Mitarbeiter ${cleanNum}`;
+        registerStaffEntry(cleanNum, staffDisplayName);
+        if (!state.staffList.some(s => s.resource === cleanNum || (parseInt(s.resource, 10) === parseInt(cleanNum, 10)))) {
+          state.staffList.push({
+            resource: /^\d{1,4}$/.test(cleanNum) ? WebExcelEngine.padNumber(cleanNum, 4) : cleanNum,
+            name: staffDisplayName,
+            dept: "Referenzdatei"
+          });
+          saveStaffToStorage(state.staffList);
+        }
+      }
+
+      // 5. In IndexedDB dauerhaft speichern
+      const refBuf = await state.refWorkbook.xlsx.writeBuffer();
+      state.lastRefBuffer = refBuf;
+      await saveRefFileToStorage(state.refFileName || "Referenz_Stammdaten.xlsx", refBuf, state.currentRefSheet);
+
+      // 6. Neu analysieren & Oberflächen aktualisieren
+      extractStaffFromReferenceWorkbook(state.refWorkbook);
+      runInspection({ skipScroll: true, skipToast: true });
+
+      showToast(`✅ "${cleanNum}" wurde dauerhaft in die Referenzdatei (${refColName || 'Stammdaten'}) übernommen!`);
+      return true;
+    } catch (err) {
+      console.error("Fehler beim Hinzufügen der Nummer zur Referenzdatei:", err);
+      alert("Fehler beim Aktualisieren der Referenzdatei: " + err.message);
+      return false;
+    }
+  }
+
+  // Behandelt das Speichern einer manuellen Korrektur inklusive Referenz-Option
+  async function handleManualSaveWithRefOption(targetItem, val, isChecked) {
+    if (!targetItem) return;
+    const refCol = targetItem.ref_col_name || targetItem.col_name;
+    const isResource = /ressource|personal|pers|mitarbeiter|worker/i.test(refCol || "");
+
+    const isInRef = isValueInReferenceColumn(refCol, val);
+    let shouldAddToRef = isChecked;
+
+    if (!shouldAddToRef && !isInRef && val) {
+      const ask = confirm(
+        `Die Nummer "${val}" (${targetItem.col_name}) existiert noch nicht in der Referenzdatei (${refCol}).\n\n` +
+        `Möchten Sie diese Nummer jetzt dauerhaft in die Referenzdatei schreiben, damit sie als gültig anerkannt wird?`
+      );
+      if (ask) {
+        shouldAddToRef = true;
+      }
+    }
+
+    if (shouldAddToRef && val) {
+      let optStaffName = null;
+      if (isResource) {
+        const existingName = getStaffName(val);
+        const enteredName = prompt(
+          `Mitarbeiter-Name für Nummer "${val}" (optional):`,
+          existingName && !existingName.startsWith("Mitarbeiter") ? existingName : ""
+        );
+        if (enteredName !== null && enteredName.trim() !== "") {
+          optStaffName = enteredName.trim();
+        }
+      }
+      await addNumberToReferenceFile(refCol, val, optStaffName);
+    }
+
+    applySingleCorrection(targetItem.id, val);
+  }
+
+  // --- Ergebnistabelle Rendern ---
+  function renderResultsTable() {
+    const query = state.searchQuery;
+    const filter = state.currentFilter;
+
+    const filtered = state.allResults.filter(r => {
+      const isError = (r.status !== "OK" && r.status !== "OK_LEER");
+      if (filter === "errors" && !isError) return false;
+      if (filter === "zahlendreher" && r.status !== "ZAHLENDREHER" && r.status !== "ZIFFERENTAUSCH") return false;
+      if (filter === "tippfehler" && r.status !== "TIPPFEHLER" && !r.status.startsWith("ZIFFER_")) return false;
+      if (filter === "datum" && r.status !== "DATUM_WARNUNG") return false;
+      if (filter === "nicht_existent" && r.status !== "NICHT_EXISTENT" && r.status !== "LEER" && r.status !== "NAECHSTE_ALTERNATIVE") return false;
+      if (filter === "corrected" && !r.is_corrected) return false;
+
+      if (query) {
+        const rowStr = `${r.cell} ${r.col_name} ${r.row} ${r.original_value} ${r.current_value} ${r.status_label} ${r.detail} ${r.suggestion}`.toLowerCase();
+        if (!rowStr.includes(query)) return false;
       }
       return true;
     });
 
-    const workingStaffCount = allEmployees.filter(emp => emp.workHours > 0).length;
-    const avgWorkHours = workingStaffCount > 0 ? (kwTotalWorkHours / workingStaffCount) : 0;
-
-    // Mini KPI Bar (Screen)
-    document.getElementById('kpiWocheMitarbeiterCount').textContent = `${activeWeekEmployees.length} (${workingStaffCount} aktiv)`;
-    document.getElementById('kpiWocheGesamtStunden').textContent = `${formatNumber(kwTotalWorkHours, 2)} Std.`;
-    const kpiOt = document.getElementById('kpiWocheOvertimeStunden');
-    if (kpiOt) kpiOt.textContent = `${formatNumber(kwTotalOvertimeHours, 2)} Std.`;
-    document.getElementById('kpiWocheSchnittStunden').textContent = `${formatNumber(avgWorkHours, 1)} Std. / MA`;
-    document.getElementById('kpiWocheSonderstunden').textContent = `${formatNumber(kwTotalAbsenceHours, 1)} Std.`;
-
-    const totalMissingCount = activeWeekEmployees.reduce((sum, emp) => sum + emp.unclarifiedDays.length, 0);
-    const kpiMissing = document.getElementById('kpiWocheMissingCount');
-    if (kpiMissing) {
-      if (totalMissingCount === 0) {
-        kpiMissing.textContent = '0 Tage (alles geklärt)';
-        kpiMissing.style.color = '#059669';
-      } else {
-        kpiMissing.textContent = `${totalMissingCount} Tag${totalMissingCount === 1 ? '' : 'e'} offen`;
-        kpiMissing.style.color = '#dc2626';
-      }
+    if (filtered.length === 0) {
+      resultsTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; padding: 2rem; color: var(--text-muted);">Keine Einträge für die aktuellen Filterkriterien gefunden.</td></tr>`;
+      return;
     }
-    document.getElementById('navCountWoche').textContent = activeWeekEmployees.length;
 
-    renderKlaerungsBox(activeWeekEmployees, selKw);
+    resultsTbody.innerHTML = filtered.map(r => {
+      const isCorrected = r.is_corrected;
+      const isZahlendreher = (r.status === "ZAHLENDREHER" || r.status === "ZIFFERENTAUSCH");
+      const isError = (r.status !== "OK" && r.status !== "OK_LEER");
+      const isRefCandidate = (r.status === "NICHT_EXISTENT" || r.status === "LEER" || r.status === "ZAHLENDREHER" || r.status === "TIPPFEHLER" || r.status.startsWith("ZIFFER_"));
+      const refColDisp = r.ref_col_name || r.col_name;
+      const valForRef = (r.current_value || r.original_value || "").trim();
 
-    updatePrintHeader(selKw, weekItems);
+      let rowClass = "";
+      if (isCorrected) rowClass = "row-corrected";
+      else if (isZahlendreher) rowClass = "row-zahlendreher";
+      else if (isError) rowClass = "row-error";
 
-    // ==========================================
-    // TABELLE 1: TÄGLICHE MATRIX RENDERN
-    // Alles kompakt und lesbar in der Zelle des Tages!
-    // ==========================================
-    const matrixBody = document.getElementById('wochenTagesMatrixBody');
-    if (activeWeekEmployees.length === 0) {
-      matrixBody.innerHTML = `
-        <tr class="empty-row">
-          <td colspan="10">
-            <div class="empty-state">
-              <p>Keine Einträge für Mitarbeiter in der Kalenderwoche <strong>${escapeHtml(selKw || '--')}</strong> vorhanden.</p>
-            </div>
-          </td>
-        </tr>
-      `;
-      for (let d = 0; d < 7; d++) {
-        document.getElementById(`matrixSumDay${d}`).textContent = '0,00';
-      }
-      document.getElementById('matrixSumTotal').textContent = '0,00 Std.';
-    } else {
-      matrixBody.innerHTML = activeWeekEmployees.map(emp => {
-        let cellsHtml = '';
-        for (let d = 0; d < 7; d++) {
-          const workH = emp.workHoursByDay[d];
-          const abs = emp.absenceByDay[d];
-          const manWork = emp.manualWorkByDay ? emp.manualWorkByDay[d] : null;
-          const manCorrection = emp.manualCorrectionByDay ? emp.manualCorrectionByDay[d] : null;
-          const dayOvertime = emp.overtimeByDay ? emp.overtimeByDay[d] : 0;
-          const missingH = emp.missingByDay ? emp.missingByDay[d] : 0;
-          const targetH = getDailyTargetHours(d);
-          const isWeekend = (d === 5 || d === 6);
-          const tdClass = isWeekend ? 'weekend-td' : '';
-          const targetDayIso = weekDays[d] ? weekDays[d].dateIso : '';
+      const strikedClass = isCorrected ? "is-striked" : "";
+      const inputCorrClass = isCorrected ? "is-corrected" : "";
 
-          let cellInner = '';
-          let tooltipParts = [];
-
-          if (workH > 0) {
-            tooltipParts.push(emp.detailsByDay[d].map(t => 
-              `${t.auftragsnummer}${t.ort ? ` (${t.ort})` : ''}: ${formatNumber(t.stunden, 1)}h [${t.leistung}]`
-            ).join(' | '));
-          }
-
-          if (manCorrection) {
-            tooltipParts.push(`Korrektur/Abzug: -${formatNumber(manCorrection.stunden, 1)} Std. (${manCorrection.note || 'Zuviel erfasste Arbeitszeit abgezogen'}) -> Netto-Arbeitszeit: ${formatNumber(workH, 2)} Std.`);
-          }
-
-          if (dayOvertime > 0) {
-            tooltipParts.push(`Überstunden: ${formatNumber(dayOvertime, 1)} Std. (Mehrarbeit über ${targetH}h Soll)`);
-          }
-
-          if (abs) {
-            tooltipParts.push(`Abwesenheit: ${abs.type} (${formatNumber(abs.stunden, 1)} Std.) ${abs.note ? '– ' + abs.note : ''}`);
-          }
-
-          if (manWork && !abs) {
-            tooltipParts.push(`Manuelle Arbeitszeit: ${formatNumber(manWork.stunden, 1)} Std. ${manWork.note ? '– ' + manWork.note : ''}`);
-          }
-
-          if (missingH > 0) {
-            tooltipParts.push(`⚠️ Offene Fehlzeit: ${formatNumber(missingH, 1)} Std. zur Sollzeit (${targetH}h) fehlen! Klicken zum Klären.`);
-          }
-
-          let correctionBadge = '';
-          if (manCorrection) {
-            correctionBadge = `<span class="badge-absence badge-korrektur" title="Arbeitszeit um ${formatNumber(manCorrection.stunden, 1)}h gekürzt: ${escapeHtml(manCorrection.note || 'Korrektur')}">-${formatNumber(manCorrection.stunden, 1).replace(',0', '')}h Korr</span>`;
-          }
-
-          const notesArr = [
-            manWork && manWork.note ? `AZ: ${manWork.note}` : '',
-            manCorrection ? `Korr: -${formatNumber(manCorrection.stunden, 1)}h${manCorrection.note ? ` (${manCorrection.note})` : ''}` : '',
-            abs && abs.note ? `${abs.type}: ${abs.note}` : ''
-          ].filter(Boolean);
-          const noteText = notesArr.join(' | ');
-          const noteHtml = noteText ? `<div class="cell-note-text" title="${escapeHtml(noteText)}">${escapeHtml(noteText)}</div>` : '';
-
-          // Aufbau der Zelle: Alles kompakt in EINER Zelle des Tages!
-          if (workH > 0 && abs) {
-            // Fall 1: Arbeitszeit + Abwesenheitszusatz (z. B. 6h Arbeit + 2h Überstundenabbau)
-            let overtimeBadge = '';
-            if (dayOvertime > 0) {
-              overtimeBadge = `<span class="badge-absence badge-overtime" title="Davon ${formatNumber(dayOvertime, 1)}h Überstunden">+${formatNumber(dayOvertime, 1).replace(',0', '')}h ÜSt</span>`;
-            }
-
-            let missingBadge = '';
-            if (missingH > 0) {
-              missingBadge = `<span class="badge-absence badge-missing" title="Noch ${formatNumber(missingH, 1)}h offen zur Sollzeit">⚠️ -${formatNumber(missingH, 1).replace(',0', '')}h</span>`;
-            }
-
-            cellInner = `
-              <div class="matrix-cell-wrap ${missingH > 0 ? 'cell-missing-highlight' : ''}">
-                <div class="cell-hours-row">
-                  <span class="work-num">${formatNumber(workH, 2)}</span>
-                  ${correctionBadge}
-                  ${overtimeBadge}
-                  <span class="badge-absence ${getAbsenceBadgeClass(abs.type)}">
-                    ${formatAbsenceShort(abs.type, abs.stunden)}
-                  </span>
-                  ${missingBadge}
-                </div>
-                ${noteHtml}
+      let suggHtml = "-";
+      if (r.suggestion) {
+        let otherChips = "";
+        if (r.candidates && r.candidates.length > 1) {
+          const others = r.candidates.filter(c => c.value !== r.suggestion).slice(0, 3);
+          if (others.length > 0) {
+            otherChips = `
+              <div class="alt-chips">
+                <span>Weitere:</span>
+                ${others.map(c => `
+                  <button type="button" class="alt-chip" data-id="${r.id}" data-val="${escapeHtml(c.value)}" title="${escapeHtml(c.detail)}">
+                    ${escapeHtml(c.value)}
+                  </button>
+                `).join("")}
               </div>
             `;
-          } else if (abs) {
-            // Fall 2: Nur Abwesenheit (z. B. ganzer Tag Krank oder Urlaub, Arbeitszeit = 0)
-            let missingBadge = '';
-            if (missingH > 0) {
-              missingBadge = `<span class="badge-absence badge-missing" title="Noch ${formatNumber(missingH, 1)}h offen zur Sollzeit">⚠️ -${formatNumber(missingH, 1).replace(',0', '')}h</span>`;
-            }
-
-            cellInner = `
-              <div class="matrix-cell-wrap ${missingH > 0 ? 'cell-missing-highlight' : ''}">
-                <div class="cell-hours-row">
-                  ${correctionBadge}
-                  <span class="badge-absence ${getAbsenceBadgeClass(abs.type)}">
-                    ${escapeHtml(abs.type)} ${formatNumber(abs.stunden, 1)}h
-                  </span>
-                  ${missingBadge}
-                </div>
-                ${noteHtml}
-              </div>
-            `;
-          } else if (workH > 0 && dayOvertime > 0) {
-            // Fall 3: Arbeitszeit MIT Überstunden (>8h Mo-Do, >7h Fr oder Sa/So)
-            cellInner = `
-              <div class="matrix-cell-wrap">
-                <div class="cell-hours-row">
-                  <span class="work-num">${formatNumber(workH, 2)}</span>
-                  ${correctionBadge}
-                  <span class="badge-absence badge-overtime" title="Davon ${formatNumber(dayOvertime, 1)} Std. Überstunden (über Soll ${targetH}h)">
-                    +${formatNumber(dayOvertime, 1).replace(',0', '')}h ÜSt
-                  </span>
-                </div>
-                ${noteHtml}
-              </div>
-            `;
-          } else if (workH > 0 && missingH > 0) {
-            // Fall 4: Arbeitszeit, aber WENIGER als Sollzeit und noch keine Abwesenheit erfasst!
-            cellInner = `
-              <div class="matrix-cell-wrap cell-missing-highlight">
-                <div class="cell-hours-row">
-                  <span class="work-num" style="color: #c2410c;">${formatNumber(workH, 2)}</span>
-                  ${correctionBadge}
-                  <span class="badge-absence badge-missing" title="Sollzeit (${targetH}h) nicht erreicht: ${formatNumber(missingH, 1)}h fehlen! Klicken zum Klären">
-                    ⚠️ -${formatNumber(missingH, 1).replace(',0', '')}h
-                  </span>
-                </div>
-                ${noteHtml}
-                <div class="cell-missing-text">Grund klären</div>
-              </div>
-            `;
-          } else if (workH > 0 && manWork) {
-            // Fall 5: Nachgebuchte Arbeitszeit ohne Überstunden/Minderarbeit
-            cellInner = `
-              <div class="matrix-cell-wrap">
-                <div class="cell-hours-row">
-                  <span class="work-num">${formatNumber(workH, 2)}</span>
-                  ${correctionBadge}
-                  <span class="badge-absence badge-arbeit" title="Arbeitszeit manuell nachgebucht">
-                    +${formatNumber(manWork.stunden, 1).replace(',0', '')}h AZ
-                  </span>
-                </div>
-                ${noteHtml}
-              </div>
-            `;
-          } else if (workH > 0) {
-            // Fall 6: Reguläre Arbeitsstunden (oder nach Korrektur)
-            cellInner = `
-              <div class="matrix-cell-wrap">
-                <div class="cell-hours-row">
-                  <span class="day-cell has-hours">${formatNumber(workH, 2)}</span>
-                  ${correctionBadge}
-                </div>
-                ${noteHtml}
-              </div>
-            `;
-          } else if (manCorrection) {
-            // Fall 7: Arbeitszeit durch Korrektur komplett auf 0 gesetzt
-            cellInner = `
-              <div class="matrix-cell-wrap">
-                <div class="cell-hours-row">
-                  <span class="work-num" style="color: #64748b;">0,00</span>
-                  ${correctionBadge}
-                </div>
-                ${noteHtml}
-              </div>
-            `;
-          } else if (missingH > 0) {
-            // Fall 8: 0 Stunden erfasst an einem Werktag für aktiven Mitarbeiter!
-            cellInner = `
-              <div class="matrix-cell-wrap cell-missing-highlight">
-                <span class="badge-absence badge-missing" title="0 Std. erfasst (Soll: ${targetH}h). Klicken zum Klären!">
-                  ⚠️ 0h (Grund fehlt)
-                </span>
-              </div>
-            `;
-          } else {
-            // Fall 9: Keine Stunden (Wochenende oder inaktiver Mitarbeiter)
-            cellInner = `<span class="zero-dash">–</span>`;
           }
-
-          cellsHtml += `
-            <td class="text-right matrix-cell-clickable ${tdClass}" 
-                onclick="window.openManualEntryModal('${escapeHtml(emp.ressourcennummer)}', '${targetDayIso}', ${missingH > 0 ? missingH : 'null'})"
-                title="${escapeHtml(tooltipParts.join(' // ')) || 'Klicken zum Nachbuchen von Arbeitszeit oder Erfassen von Krank, Urlaub, Überstunden'}">
-              ${cellInner}
-            </td>
-          `;
         }
 
-        let breakdownSubtext = '';
-        if (emp.absenceHours > 0) {
-          breakdownSubtext = `<div class="sub-hours-info" style="font-size: 0.72rem; color: #64748b; font-weight: normal;">${formatNumber(emp.workHours, 1)}h Arb. + ${formatNumber(emp.absenceHours, 1)}h Sond.</div>`;
-        }
-
-        let overtimeSubtext = '';
-        if (emp.overtimeHours > 0) {
-          overtimeSubtext = `<div class="emp-overtime-sub">davon ${formatNumber(emp.overtimeHours, 2)} Std. Überstd.</div>`;
-        }
-
-        return `
-          <tr>
-            <td><strong class="res-id">${escapeHtml(emp.ressourcennummer)}</strong></td>
-            <td><strong>${escapeHtml(emp.name)}</strong></td>
-            ${cellsHtml}
-            <td class="text-right font-bold" style="color: #1e3a8a; background-color: #f8fafc;">
-              ${formatNumber(emp.workHours, 2)} Std.
-              ${overtimeSubtext}
-              ${breakdownSubtext}
-            </td>
-          </tr>
-        `;
-      }).join('');
-
-      for (let d = 0; d < 7; d++) {
-        document.getElementById(`matrixSumDay${d}`).textContent = formatNumber(dayTotals[d], 2);
-      }
-      document.getElementById('matrixSumTotal').innerHTML = `
-        <div>${formatNumber(kwTotalWorkHours, 2)} Std.</div>
-        ${kwTotalOvertimeHours > 0 ? `<div style="font-size: 0.72rem; color: #b45309; font-weight: 700;">davon ${formatNumber(kwTotalOvertimeHours, 2)}h Überstunden</div>` : ''}
-      `;
-    }
-
-    // ==========================================
-    // TABELLE 2: KOMPAKTE ZUSAMMENFASSUNG RENDERN
-    // ==========================================
-    const kompaktBody = document.getElementById('wochenTableBody');
-    if (activeWeekEmployees.length === 0) {
-      kompaktBody.innerHTML = `
-        <tr class="empty-row">
-          <td colspan="9">
-            <div class="empty-state">
-              <p>Keine Einträge für diese Kalenderwoche.</p>
-            </div>
-          </td>
-        </tr>
-      `;
-      document.getElementById('wochenFootSonderSum').textContent = '0,00 Std.';
-      document.getElementById('wochenFootStundenSum').textContent = '0,00 Std.';
-      const footOt = document.getElementById('wochenFootOvertimeSum');
-      if (footOt) footOt.textContent = '0,00 Std.';
-      document.getElementById('wochenFootGesamtSum').textContent = '0,00 Std.';
-      document.getElementById('wochenFootTageSum').textContent = '0';
-    } else {
-      kompaktBody.innerHTML = activeWeekEmployees.map((emp, index) => {
-        let absenceBreakdownHtml = '';
-        if (emp.absenceList.length > 0) {
-          const itemsHtml = emp.absenceList.map(item => `
-            <div class="absence-item-row">
-              <span class="badge-absence ${getAbsenceBadgeClass(item.type)}">${escapeHtml(item.type)}</span>
-              <span class="absence-day">${escapeHtml(item.dayName)}, ${escapeHtml(item.dateDisplay)}:</span>
-              <span class="absence-hours">${formatNumber(item.stunden, 1)} Std.</span>
-              ${item.note ? `<span class="absence-note-tag" title="${escapeHtml(item.note)}">${escapeHtml(item.note)}</span>` : ''}
-            </div>
-          `).join('');
-
-          absenceBreakdownHtml = `<div class="absence-breakdown-wrapper">${itemsHtml}</div>`;
-        } else {
-          absenceBreakdownHtml = `<span class="no-absence-text">– keine Sonderzeiten (regulärer Dienst) –</span>`;
-        }
-
-        const absenceHoursDisplay = emp.absenceHours > 0 
-          ? `<strong style="color: #64748b;">${formatNumber(emp.absenceHours, 2)} Std.</strong>`
-          : `<span class="text-muted">–</span>`;
-
-        const overtimeDisplay = emp.overtimeHours > 0
-          ? `<strong style="color: #b45309;">${formatNumber(emp.overtimeHours, 2)} Std.</strong>`
-          : `<span class="text-muted">–</span>`;
-
-        return `
-          <tr>
-            <td class="text-center" style="color: var(--text-muted); font-size: 0.8rem;">${index + 1}</td>
-            <td>
-              <span style="font-weight: 700; color: #0f172a;">${escapeHtml(emp.name)}</span>
-            </td>
-            <td>
-              <span class="res-id" style="font-size: 0.82rem;">${escapeHtml(emp.ressourcennummer)}</span>
-            </td>
-            <td class="text-center screen-only-col">
-              <span class="badge badge-info">${emp.datesSet.size} Tag${emp.datesSet.size === 1 ? '' : 'e'}</span>
-            </td>
-            <td>
-              ${absenceBreakdownHtml}
-            </td>
-            <td class="text-right font-medium">
-              ${absenceHoursDisplay}
-            </td>
-            <td class="text-right font-bold" style="color: #1e3a8a;">
-              ${formatNumber(emp.workHours, 2)} Std.
-            </td>
-            <td class="text-right font-bold" style="background-color: #fffbeb;">
-              ${overtimeDisplay}
-            </td>
-            <td class="text-right font-bold" style="background-color: #f8fafc; color: #0f172a;">
-              ${formatNumber(emp.totalHours, 2)} Std.
-            </td>
-          </tr>
-        `;
-      }).join('');
-
-      let totalDays = 0;
-      for (const emp of activeWeekEmployees) {
-        totalDays += emp.datesSet.size;
-      }
-      document.getElementById('wochenFootSonderSum').textContent = `${formatNumber(kwTotalAbsenceHours, 2)} Std.`;
-      document.getElementById('wochenFootStundenSum').textContent = `${formatNumber(kwTotalWorkHours, 2)} Std.`;
-      const footOt = document.getElementById('wochenFootOvertimeSum');
-      if (footOt) footOt.textContent = `${formatNumber(kwTotalOvertimeHours, 2)} Std.`;
-      document.getElementById('wochenFootGesamtSum').textContent = `${formatNumber(kwTotalHours, 2)} Std.`;
-      document.getElementById('wochenFootTageSum').textContent = `${totalDays} Einsatztage`;
-    }
-  }
-
-  function updatePrintHeader(selKw, weekItems) {
-    let kwTitle = selKw ? `Kalenderwoche: ${selKw}` : 'Kalenderwoche: --';
-    let dateRange = '--';
-
-    if (weekItems.length > 0 && weekItems[0].kwInfo) {
-      kwTitle = weekItems[0].kwInfo.label;
-      dateRange = weekItems[0].kwInfo.rangeText;
-    } else if (selKw) {
-      const match = selKw.match(/^(\d{4})-W(\d{2})$/);
-      if (match) {
-        kwTitle = `Kalenderwoche ${match[2]} / ${match[1]}`;
-      }
-    }
-
-    const now = new Date();
-    const generatedAt = `${formatGermanDateTime(now)} Uhr`;
-
-    document.getElementById('printHeaderKwTitle').textContent = kwTitle;
-    document.getElementById('printHeaderDateRange').textContent = dateRange;
-    document.getElementById('printHeaderGeneratedAt').textContent = generatedAt;
-  }
-
-  // ==========================================================================
-  // 8. EVENT LISTENERS & MODAL MANAGEMENT
-  // ==========================================================================
-  function setupDomEvents() {
-    document.querySelectorAll('.tab-button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const tabId = btn.getAttribute('data-tab');
-        switchTab(tabId);
-      });
-    });
-
-    const fileStamm = document.getElementById('fileInputStamm');
-    fileStamm.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files[0]) {
-        parseStammdatenFile(e.target.files[0]);
-        e.target.value = '';
-      }
-    });
-
-    const fileBewegung = document.getElementById('fileInputBewegung');
-    fileBewegung.addEventListener('change', (e) => {
-      if (e.target.files && e.target.files[0]) {
-        parseBewegungsdatenFile(e.target.files[0]);
-        e.target.value = '';
-      }
-    });
-
-    setupDragAndDrop('dropZoneStamm', 'cardStammdaten', parseStammdatenFile);
-    setupDragAndDrop('dropZoneBewegung', 'cardBewegungsdaten', parseBewegungsdatenFile);
-
-    const filterFrom = document.getElementById('filterDateFrom');
-    const filterTo = document.getElementById('filterDateTo');
-    const filterCat = document.getElementById('filterCategory');
-    const filterSearch = document.getElementById('filterSearch');
-    const btnClearSearch = document.getElementById('btnClearSearch');
-
-    filterFrom.addEventListener('change', () => {
-      state.filters.dateFrom = filterFrom.value;
-      renderDetailTab();
-    });
-
-    filterTo.addEventListener('change', () => {
-      state.filters.dateTo = filterTo.value;
-      renderDetailTab();
-    });
-
-    filterCat.addEventListener('change', () => {
-      state.filters.category = filterCat.value;
-      renderDetailTab();
-    });
-
-    filterSearch.addEventListener('input', () => {
-      state.filters.search = filterSearch.value;
-      btnClearSearch.style.display = filterSearch.value ? 'block' : 'none';
-      renderDetailTab();
-    });
-
-    btnClearSearch.addEventListener('click', () => {
-      filterSearch.value = '';
-      state.filters.search = '';
-      btnClearSearch.style.display = 'none';
-      renderDetailTab();
-      filterSearch.focus();
-    });
-
-    document.getElementById('btnResetFilters').addEventListener('click', () => {
-      filterFrom.value = '';
-      filterTo.value = '';
-      filterCat.value = '';
-      filterSearch.value = '';
-      state.filters = { dateFrom: '', dateTo: '', category: '', search: '' };
-      btnClearSearch.style.display = 'none';
-      renderDetailTab();
-      showToast('Alle Filter zurückgesetzt.', 'info');
-    });
-
-    document.querySelectorAll('#detailTable th.sortable').forEach(th => {
-      th.addEventListener('click', () => {
-        const field = th.getAttribute('data-sort');
-        if (state.sort.field === field) {
-          state.sort.asc = !state.sort.asc;
-        } else {
-          state.sort.field = field;
-          state.sort.asc = true;
-        }
-
-        document.querySelectorAll('#detailTable th.sortable').forEach(h => {
-          h.classList.remove('sort-asc', 'sort-desc');
-        });
-        th.classList.add(state.sort.asc ? 'sort-asc' : 'sort-desc');
-
-        renderDetailTab();
-      });
-    });
-
-    document.getElementById('selectKalenderwoche').addEventListener('change', (e) => {
-      state.selectedKwKey = e.target.value;
-      renderWochenTab();
-    });
-
-    const chkAllEmp = document.getElementById('chkShowAllEmployees');
-    if (chkAllEmp) {
-      chkAllEmp.addEventListener('change', (e) => {
-        state.showAllEmployeesInWeekly = e.target.checked;
-        renderWochenTab();
-      });
-    }
-
-    const wocheSearch = document.getElementById('wocheSearchInput');
-    if (wocheSearch) {
-      wocheSearch.addEventListener('input', (e) => {
-        state.weeklySearch = e.target.value;
-        renderWochenTab();
-      });
-    }
-
-    document.getElementById('btnPrintWochenbericht').addEventListener('click', () => {
-      triggerPrintWochenbericht();
-    });
-
-    document.getElementById('btnExportDetailExcel').addEventListener('click', () => {
-      exportDetailToExcel();
-    });
-
-    document.getElementById('btnDemoData').addEventListener('click', () => {
-      loadDemoData();
-    });
-
-    const modalSettings = document.getElementById('modalSettings');
-    document.getElementById('btnOpenSettings').addEventListener('click', () => {
-      updateStammdatenStatusUI();
-      modalSettings.style.display = 'flex';
-    });
-    document.getElementById('btnCloseSettings').addEventListener('click', () => {
-      modalSettings.style.display = 'none';
-    });
-    document.getElementById('btnModalCloseFooter').addEventListener('click', () => {
-      modalSettings.style.display = 'none';
-    });
-    modalSettings.addEventListener('click', (e) => {
-      if (e.target === modalSettings) {
-        modalSettings.style.display = 'none';
-      }
-    });
-
-    document.getElementById('btnModalUploadNew').addEventListener('click', () => {
-      document.getElementById('fileInputStamm').click();
-      modalSettings.style.display = 'none';
-    });
-
-    document.getElementById('btnLoadDefaultStamm').addEventListener('click', () => {
-      saveStammdatenToStorage(DEMO_STAMMDATEN, DEMO_AUFTRAEGE, 'Muster_Stammdaten.xlsx');
-      updateStammdatenStatusUI();
-    });
-
-    document.getElementById('btnClearManualOnly').addEventListener('click', () => {
-      if (confirm('Möchtest du alle eingetragenen Sonderzeiten und Abwesenheiten löschen?')) {
-        state.manualEntries = [];
-        saveManualEntriesToStorage();
-        showToast('Alle Abwesenheiten wurden gelöscht.', 'info');
-      }
-    });
-
-    document.getElementById('btnClearStammStorage').addEventListener('click', () => {
-      if (confirm('Möchtest du alle gespeicherten Stammdaten, Aufträge und Abwesenheiten wirklich löschen?')) {
-        clearStammdatenStorage();
-      }
-    });
-
-    // Modal für manuelle Sonderzeiten
-    const modalManual = document.getElementById('modalManualEntry');
-    document.getElementById('btnOpenManualEntry').addEventListener('click', () => {
-      openManualEntryModal();
-    });
-    document.getElementById('btnCloseManualModal').addEventListener('click', () => {
-      modalManual.style.display = 'none';
-    });
-    document.getElementById('btnCancelManualModal').addEventListener('click', () => {
-      modalManual.style.display = 'none';
-    });
-    modalManual.addEventListener('click', (e) => {
-      if (e.target === modalManual) {
-        modalManual.style.display = 'none';
-      }
-    });
-
-    document.getElementById('btnSaveManualEntry').addEventListener('click', () => {
-      submitManualEntryForm();
-    });
-
-    document.getElementById('btnDeleteManualEntry').addEventListener('click', () => {
-      const editId = document.getElementById('manualEditId').value;
-      if (editId) {
-        deleteManualEntryById(editId);
-        modalManual.style.display = 'none';
-      }
-    });
-
-    document.getElementById('manualSelectMitarbeiter').addEventListener('change', checkAndPrepopulateExistingEntry);
-    document.getElementById('manualDateInput').addEventListener('change', checkAndPrepopulateExistingEntry);
-    document.getElementById('manualDateInput').addEventListener('input', checkAndPrepopulateExistingEntry);
-
-    const selType = document.getElementById('manualTypeSelect');
-    if (selType) {
-      selType.addEventListener('change', () => {
-        if (window.updateManualHoursCalcFeedback) window.updateManualHoursCalcFeedback();
-      });
-    }
-
-    const inpHours = document.getElementById('manualHoursInput');
-    if (inpHours) {
-      inpHours.addEventListener('input', () => {
-        if (window.updateManualHoursCalcFeedback) window.updateManualHoursCalcFeedback();
-      });
-      inpHours.addEventListener('change', () => {
-        if (window.updateManualHoursCalcFeedback) window.updateManualHoursCalcFeedback();
-      });
-    }
-
-    window.openManualEntryModal = openManualEntryModal;
-    window.deleteManualEntryDirect = (id) => {
-      deleteManualEntryById(id);
-    };
-  }
-
-  function getDefaultHoursForDate(dateStrOrObj) {
-    if (!dateStrOrObj) return 8.0;
-    const d = (dateStrOrObj instanceof Date) ? dateStrOrObj : parseAnyDate(dateStrOrObj);
-    if (!d || isNaN(d.getTime())) return 8.0;
-    // d.getDay(): 0=So, 1=Mo, 2=Di, 3=Mi, 4=Do, 5=Fr, 6=Sa
-    return (d.getDay() === 5) ? 7.0 : 8.0;
-  }
-
-  function getDailyTargetHours(dayIdx) {
-    // dayIdx: 0=Mo, 1=Di, 2=Mi, 3=Do, 4=Fr, 5=Sa, 6=So
-    if (dayIdx >= 0 && dayIdx <= 3) return 8.0; // Mo - Do
-    if (dayIdx === 4) return 7.0;               // Fr
-    return 0.0;                                // Sa, So (Wochenende)
-  }
-
-  function getTargetHoursForDate(dateStrOrObj) {
-    const d = (dateStrOrObj instanceof Date) ? dateStrOrObj : parseAnyDate(dateStrOrObj);
-    if (!d || isNaN(d.getTime())) return 8.0;
-    const day = d.getDay(); // 0=So, 1=Mo, 2=Di, 3=Mi, 4=Do, 5=Fr, 6=Sa
-    if (day >= 1 && day <= 4) return 8.0; // Mo - Do
-    if (day === 5) return 7.0;            // Fr
-    return 0.0;                           // Sa, So
-  }
-
-  function getRecordedHoursForEmployeeAndDate(ressourcennummer, dateIso) {
-    if (!ressourcennummer || !dateIso) return { rawWorkH: 0, manualWorkH: 0, correctionH: 0, netWorkH: 0, workH: 0, absH: 0 };
-    const rKey = normalizeResourceKey(ressourcennummer);
-    let rawWorkH = 0;
-    let manualWorkH = 0;
-    let correctionH = 0;
-    let absH = 0;
-
-    for (const b of state.bewegungsdaten) {
-      if (normalizeResourceKey(b.ressourcennummer) === rKey && b.dateIso === dateIso) {
-        rawWorkH += (b.stunden || 0);
-      }
-    }
-
-    for (const m of state.manualEntries) {
-      if (normalizeResourceKey(m.ressourcennummer) === rKey && m.dateIso === dateIso) {
-        const isAbzug = (m.type === 'Arbeitszeit-Abzug' || String(m.type).toLowerCase().includes('abzug') || String(m.type).toLowerCase().includes('kürzung'));
-        const isArbeitszeitZuschlag = !isAbzug && (m.type === 'Arbeitszeit' || String(m.type).toLowerCase().includes('arbeit'));
-
-        if (isAbzug) {
-          correctionH += Math.abs(Number(m.stunden) || 0);
-        } else if (isArbeitszeitZuschlag) {
-          manualWorkH += (Number(m.stunden) || 0);
-        } else {
-          absH += (Number(m.stunden) || 0);
-        }
-      }
-    }
-
-    const netWorkH = Math.max(0, rawWorkH + manualWorkH - correctionH);
-    return { rawWorkH, manualWorkH, correctionH, netWorkH, workH: netWorkH, absH };
-  }
-
-  function renderKlaerungsBox(activeEmployees, selKw) {
-    const box = document.getElementById('wocheKlaerungBox');
-    const badge = document.getElementById('klaerungStatusBadge');
-    const content = document.getElementById('klaerungContent');
-    if (!box || !badge || !content) return;
-
-    const allUnclarified = [];
-    for (const emp of activeEmployees) {
-      if (emp.unclarifiedDays && emp.unclarifiedDays.length > 0) {
-        for (const item of emp.unclarifiedDays) {
-          allUnclarified.push({
-            emp: emp,
-            ...item
-          });
-        }
-      }
-    }
-
-    if (allUnclarified.length === 0) {
-      box.className = 'klaerung-box all-clear no-print';
-      badge.textContent = '✅ Vollständig geklärt';
-      content.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; color: #166534; font-weight: 500; margin-top: 0.4rem;">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-            <polyline points="22 4 12 14.01 9 11.01"></polyline>
-          </svg>
-          <span>Alle regulären Arbeitszeiten der Woche (${escapeHtml(selKw || '--')}) sind vollständig erfasst und begründet. Keine offenen Fehlzeiten.</span>
-        </div>
-      `;
-    } else {
-      box.className = 'klaerung-box no-print';
-      badge.textContent = `⚠️ ${allUnclarified.length} offene${allUnclarified.length === 1 ? 'r Tag' : ' Tage'}`;
-      
-      const itemsHtml = allUnclarified.map(item => `
-        <div class="klaerung-item">
-          <div class="klaerung-item-info">
-            <div class="klaerung-item-name">${escapeHtml(item.emp.name)} <span style="font-weight: normal; color: #64748b;">(${escapeHtml(item.emp.ressourcennummer)})</span></div>
-            <div class="klaerung-item-details">
-              <strong>${escapeHtml(item.dayName)}, ${escapeHtml(item.dateDisplay)}:</strong> 
-              ${item.workH > 0 ? `${formatNumber(item.workH, 1)} von ${formatNumber(item.targetH, 1)} Std. erfasst` : `0 von ${formatNumber(item.targetH, 1)} Std. erfasst`}
-              <span style="font-weight: 800; color: #dc2626; margin-left: 4px;">(${formatNumber(item.missingH, 1)} Std. offen)</span>
-            </div>
-          </div>
-          <button type="button" class="btn-klaeren" 
-                  onclick="window.openManualEntryModal('${escapeHtml(item.emp.ressourcennummer)}', '${item.dateIso}', ${item.missingH})"
-                  title="Grund für fehlende ${formatNumber(item.missingH, 1)} Std. erfassen">
-            ⚡ Grund erfassen
-          </button>
-        </div>
-      `).join('');
-
-      content.innerHTML = `
-        <div style="font-size: 0.82rem; color: #7c2d12; margin-top: 0.4rem; margin-bottom: 0.6rem;">
-          An folgenden Tagen wurde weniger als die reguläre Sollzeit (Mo–Do 8h, Fr 7h) gearbeitet. Bitte erfasse für die Differenz den jeweiligen Grund (Krankheit, Überstunden abgefeiert, sonstiges oder Arbeitszeit-Nachbuchung):
-        </div>
-        <div class="klaerung-items-list">
-          ${itemsHtml}
-        </div>
-      `;
-    }
-  }
-
-  function populateManualModalEmployees() {
-    const sel = document.getElementById('manualSelectMitarbeiter');
-    if (!sel) return;
-
-    const currentVal = sel.value;
-    const empMap = new Map();
-
-    for (const item of state.stammdaten) {
-      if (item.kategorie && item.kategorie.toLowerCase() === 'mitarbeiter' && item.ressourcennummer) {
-        const key = normalizeResourceKey(item.ressourcennummer) || normalizeKey(item.ressourcennummer);
-        if (!empMap.has(key)) {
-          empMap.set(key, { id: item.ressourcennummer, label: `${item.name} (${item.ressourcennummer})` });
-        }
-      }
-    }
-
-    // Auch Mitarbeiter aus Bewegungsdaten ergänzen (falls noch nicht in Stammdaten vorhanden)
-    for (const item of state.bewegungsdaten) {
-      if (item.isMitarbeiter && item.ressourcennummer) {
-        const key = normalizeResourceKey(item.ressourcennummer) || normalizeKey(item.ressourcennummer);
-        if (!empMap.has(key)) {
-          empMap.set(key, { id: item.ressourcennummer, label: `${item.name} (${item.ressourcennummer})` });
-        }
-      }
-    }
-
-    const employees = Array.from(empMap.values());
-    employees.sort((a, b) => a.label.localeCompare(b.label, 'de'));
-
-    let html = `<option value="">-- Mitarbeiter wählen --</option>`;
-    for (const emp of employees) {
-      const isSel = (normalizeResourceKey(emp.id) === normalizeResourceKey(currentVal));
-      html += `<option value="${escapeHtml(emp.id)}" ${isSel ? 'selected' : ''}>${escapeHtml(emp.label)}</option>`;
-    }
-    sel.innerHTML = html;
-  }
-
-  function updateManualModalState(forcedMissingHours = null) {
-    const selEmp = document.getElementById('manualSelectMitarbeiter');
-    const dateInput = document.getElementById('manualDateInput');
-    const typeSelect = document.getElementById('manualTypeSelect');
-    const hoursInput = document.getElementById('manualHoursInput');
-    const noteInput = document.getElementById('manualNoteInput');
-    const editIdInput = document.getElementById('manualEditId');
-    const btnDelete = document.getElementById('btnDeleteManualEntry');
-    const existingInfo = document.getElementById('manualExistingInfo');
-    const hintFriday = document.getElementById('hintFridayHours');
-    const contextBanner = document.getElementById('manualContextBanner');
-    const recordedBox = document.getElementById('manualRecordedBox');
-    const lblRecordedDate = document.getElementById('lblRecordedDate');
-    const lblCurrentWorkHours = document.getElementById('lblCurrentWorkHours');
-    const lblCurrentTargetDiff = document.getElementById('lblCurrentTargetDiff');
-    const quickCorrectionRow = document.getElementById('quickCorrectionRow');
-    const quickCorrectionButtons = document.getElementById('quickCorrectionButtons');
-
-    const defHours = getDefaultHoursForDate(dateInput.value);
-    const targetH = getTargetHoursForDate(dateInput.value);
-    if (hintFriday) {
-      hintFriday.style.display = (defHours === 7.0) ? 'inline-block' : 'none';
-    }
-
-    const rec = getRecordedHoursForEmployeeAndDate(selEmp.value, dateInput.value);
-    const pDate = parseAnyDate(dateInput.value);
-    const dateDisplayStr = pDate ? formatGermanDate(pDate) : dateInput.value;
-
-    // 1. Box für erfasste Arbeitszeit & Schnellkorrektur
-    if (recordedBox && (rec.rawWorkH > 0 || rec.manualWorkH > 0 || rec.correctionH > 0)) {
-      recordedBox.style.display = 'block';
-      if (lblRecordedDate) lblRecordedDate.textContent = dateDisplayStr;
-      if (lblCurrentWorkHours) {
-        if (rec.correctionH > 0) {
-          lblCurrentWorkHours.innerHTML = `${formatNumber(rec.netWorkH, 2)} Std. <span style="font-size: 0.75rem; font-weight: normal; color: #dc2626;">(Ursprünglich ${formatNumber(rec.rawWorkH + rec.manualWorkH, 2)}h - ${formatNumber(rec.correctionH, 2)}h Abzug)</span>`;
-        } else {
-          lblCurrentWorkHours.textContent = `${formatNumber(rec.netWorkH, 2)} Std.`;
-        }
-      }
-
-      if (lblCurrentTargetDiff) {
-        if (targetH > 0) {
-          if (rec.netWorkH > targetH) {
-            const diff = rec.netWorkH - targetH;
-            lblCurrentTargetDiff.textContent = `(Soll: ${formatNumber(targetH, 1)}h | +${formatNumber(diff, 1)}h Überstunden)`;
-            lblCurrentTargetDiff.style.color = '#b45309';
-          } else if (rec.netWorkH < targetH) {
-            const diff = targetH - rec.netWorkH;
-            lblCurrentTargetDiff.textContent = `(Soll: ${formatNumber(targetH, 1)}h | -${formatNumber(diff, 1)}h Unterstunden)`;
-            lblCurrentTargetDiff.style.color = '#dc2626';
-          } else {
-            lblCurrentTargetDiff.textContent = `(Soll: genau ${formatNumber(targetH, 1)}h erreicht)`;
-            lblCurrentTargetDiff.style.color = '#166534';
-          }
-        } else {
-          lblCurrentTargetDiff.textContent = `(Wochenende: keine reguläre Sollzeit)`;
-          lblCurrentTargetDiff.style.color = '#64748b';
-        }
-      }
-
-      // Schnellkorrektur-Buttons
-      if (quickCorrectionRow && quickCorrectionButtons) {
-        if (rec.netWorkH > 0) {
-          quickCorrectionRow.style.display = 'block';
-          const buttons = [];
-
-          if (targetH > 0 && rec.netWorkH > targetH) {
-            const diff = rec.netWorkH - targetH;
-            buttons.push(`
-              <button type="button" class="btn-korr-chip target-soll" onclick="window.applyQuickCorrection(${diff}, ${targetH}, 'Sollzeit ${formatNumber(targetH, 1)}h')" title="Zuviel erfasste ${formatNumber(diff, 1)}h abziehen, damit genau ${formatNumber(targetH, 1)}h Sollzeit verbleiben">
-                ⚡ Auf Sollzeit (${formatNumber(targetH, 1)}h) setzen (-${formatNumber(diff, 1).replace(',0', '')}h)
-              </button>
-            `);
-          }
-
-          if (rec.netWorkH > 8.0 && targetH !== 8.0) {
-            const diff = rec.netWorkH - 8.0;
-            buttons.push(`
-              <button type="button" class="btn-korr-chip" onclick="window.applyQuickCorrection(${diff}, 8.0, '8,0 Std.')" title="Auf 8,0 Std. setzen">
-                Auf 8,0h setzen (-${formatNumber(diff, 1).replace(',0', '')}h)
-              </button>
-            `);
-          }
-
-          if (rec.netWorkH > 7.0 && targetH !== 7.0) {
-            const diff = rec.netWorkH - 7.0;
-            buttons.push(`
-              <button type="button" class="btn-korr-chip" onclick="window.applyQuickCorrection(${diff}, 7.0, '7,0 Std.')" title="Auf 7,0 Std. setzen">
-                Auf 7,0h setzen (-${formatNumber(diff, 1).replace(',0', '')}h)
-              </button>
-            `);
-          }
-
-          buttons.push(`
-            <button type="button" class="btn-korr-chip" onclick="window.applyQuickCorrection(${rec.netWorkH}, 0, 'Stornierung (0h)')" title="Kompletten Tag stornieren">
-              Komplett stornieren (-${formatNumber(rec.netWorkH, 1).replace(',0', '')}h)
+        suggHtml = `
+          <div class="alt-chips-container">
+            <button class="btn-apply-sugg" data-id="${r.id}" data-val="${escapeHtml(r.suggestion)}" title="Diesen Vorschlag übernehmen">
+              <span class="icon">✓</span> <strong>${escapeHtml(r.suggestion)}</strong> übernehmen
             </button>
-          `);
+            ${otherChips}
+          </div>
+        `;
+      } else if (isRefCandidate && valForRef && valForRef !== "—") {
+        suggHtml = `
+          <button type="button" class="btn-quick-add-ref" data-id="${r.id}" data-val="${escapeHtml(valForRef)}" data-col="${escapeHtml(refColDisp)}" title="Diese Nummer als neue gültige Nummer dauerhaft in die Referenzdatei schreiben">
+            <span class="icon">➕</span> In Referenz (${escapeHtml(refColDisp)}) aufnehmen
+          </button>
+        `;
+      }
 
-          quickCorrectionButtons.innerHTML = buttons.join('');
+      const manualHtml = `
+        <div class="manual-edit-box" style="display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem;">
+          <div style="display: flex; align-items: center; gap: 0.35rem; width: 100%;">
+            <input type="text" class="manual-input ${inputCorrClass}" 
+              data-id="${r.id}" 
+              value="${escapeHtml(r.current_value)}" 
+              placeholder="Nummer eintragen..."
+              title="Nummer manuell anpassen und Enter drücken">
+            <button class="btn-save-manual" data-id="${r.id}" title="Händisch speichern">💾 Speichern</button>
+          </div>
+          ${isRefCandidate ? `
+            <label class="cb-ref-label" title="Diesen Wert zusätzlich dauerhaft in die Referenzdatei (${escapeHtml(refColDisp)}) schreiben, sodass er sofort als gültig anerkannt wird">
+              <input type="checkbox" class="cb-add-to-ref" data-id="${r.id}">
+              <span class="cb-ref-text">In Referenz übernehmen</span>
+            </label>
+          ` : ''}
+        </div>
+        ${isCorrected ? '<div style="margin-top: 4px;"><span class="badge badge-corrected">✓ Geändert</span></div>' : ''}
+      `;
+
+      const displayOrig = (r.original_value && !String(r.original_value).toLowerCase().includes("object")) ? r.original_value : "—";
+
+      return `
+        <tr class="${rowClass}">
+          <td><span class="cell-coord">${escapeHtml(r.cell)}</span></td>
+          <td><strong>${escapeHtml(r.col_name)}</strong></td>
+          <td style="color: var(--text-muted);">Zeile ${r.row}</td>
+          <td><span class="val-old ${strikedClass}">${escapeHtml(displayOrig)}</span></td>
+          <td>
+            <span class="badge ${r.badge_class}">${escapeHtml(r.status_label)}</span>
+            <div class="diag-detail" style="margin-top: 3px;">${escapeHtml(r.detail)}</div>
+          </td>
+          <td>${suggHtml}</td>
+          <td>${manualHtml}</td>
+        </tr>
+      `;
+    }).join("");
+
+    // Event Listener für Vorschläge
+    resultsTbody.querySelectorAll(".btn-apply-sugg").forEach(btn => {
+      btn.addEventListener("click", () => {
+        applySingleCorrection(btn.dataset.id, btn.dataset.val);
+      });
+    });
+
+    resultsTbody.querySelectorAll(".alt-chip").forEach(chip => {
+      chip.addEventListener("click", () => {
+        applySingleCorrection(chip.dataset.id, chip.dataset.val);
+      });
+    });
+
+    // Event Listener für 1-Klick-Übernahme in Referenzdatei
+    resultsTbody.querySelectorAll(".btn-quick-add-ref").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        const val = btn.dataset.val;
+        const col = btn.dataset.col;
+        const targetItem = state.allResults.find(r => r.id === id);
+        if (!targetItem || !val) return;
+
+        const isResource = /ressource|personal|pers|mitarbeiter|worker/i.test(col || "");
+        let optStaffName = null;
+        if (isResource) {
+          const existingName = getStaffName(val);
+          const enteredName = prompt(
+            `Nummer "${val}" als neu in die Referenzdatei (${col}) aufnehmen.\n\nName des Mitarbeiters (optional):`,
+            existingName && !existingName.startsWith("Mitarbeiter") ? existingName : ""
+          );
+          if (enteredName === null) return;
+          if (enteredName.trim() !== "") optStaffName = enteredName.trim();
         } else {
-          quickCorrectionRow.style.display = 'none';
+          const confirmAdd = confirm(`Möchten Sie die Nummer "${val}" als neue gültige Nummer dauerhaft in die Referenzdatei (${col}) übernehmen?`);
+          if (!confirmAdd) return;
         }
-      }
-    } else if (recordedBox) {
-      recordedBox.style.display = 'none';
-    }
 
-    // 2. Bestehenden Eintrag suchen
-    const existing = findManualEntry(selEmp.value, dateInput.value);
-    if (existing) {
-      editIdInput.value = existing.id;
-      typeSelect.value = existing.type;
-      hoursInput.value = Number(existing.stunden).toFixed(1);
-      noteInput.value = existing.note || '';
-      btnDelete.style.display = 'block';
-      existingInfo.style.display = 'block';
-      if (contextBanner) contextBanner.style.display = 'none';
-    } else {
-      editIdInput.value = '';
-      btnDelete.style.display = 'none';
-      existingInfo.style.display = 'none';
-
-      const isWeekday = (targetH > 0);
-      const totalRec = rec.workH + rec.absH;
-      const missingH = (forcedMissingHours !== null && forcedMissingHours !== undefined) 
-        ? forcedMissingHours 
-        : (isWeekday && totalRec < targetH ? (targetH - totalRec) : 0);
-
-      if (missingH > 0 && isWeekday) {
-        hoursInput.value = Number(missingH).toFixed(1);
-        typeSelect.value = (rec.workH > 0) ? 'Überstundenabbau' : 'Krank';
-        noteInput.value = '';
-
-        if (contextBanner) {
-          contextBanner.style.display = 'block';
-          contextBanner.innerHTML = `
-            <div style="font-weight: 700; margin-bottom: 3px;">⚠️ Fehlzeiten-Nachfrage (Soll-Arbeitszeit: ${formatNumber(targetH, 1)} Std.)</div>
-            <div>Bisher erfasst: <strong>${formatNumber(rec.workH, 1)} Std. Arbeit</strong>. Es fehlen <strong>${formatNumber(missingH, 1)} Std.</strong></div>
-            <div style="margin-top: 4px; font-size: 0.78rem; opacity: 0.9;">
-              Bitte wähle den Grund für die Minderarbeit (z. B. <strong>Überstunden abgefeiert / Abbau</strong>, <strong>Krankheit</strong>, <strong>Urlaub</strong> oder <strong>Arbeitszeit-Nachbuchung</strong>).
-            </div>
-          `;
-        }
-      } else {
-        typeSelect.value = 'Arbeitszeit';
-        hoursInput.value = defHours.toFixed(1);
-        noteInput.value = '';
-        if (contextBanner) contextBanner.style.display = 'none';
-      }
-    }
-
-    if (window.updateManualHoursCalcFeedback) {
-      window.updateManualHoursCalcFeedback();
-    }
-  }
-
-  function openManualEntryModal(ressourcennummer = '', dateIso = '', forcedMissingHours = null) {
-    populateManualModalEmployees();
-
-    const modal = document.getElementById('modalManualEntry');
-    const selEmp = document.getElementById('manualSelectMitarbeiter');
-    const dateInput = document.getElementById('manualDateInput');
-
-    if (ressourcennummer) {
-      const normTarget = normalizeResourceKey(ressourcennummer);
-      let found = false;
-      for (const opt of selEmp.options) {
-        if (normalizeResourceKey(opt.value) === normTarget) {
-          selEmp.value = opt.value;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        selEmp.value = ressourcennummer;
-      }
-    }
-    if (dateIso) {
-      dateInput.value = dateIso;
-    } else if (!dateInput.value) {
-      dateInput.value = formatDateIso(new Date());
-    }
-
-    updateManualModalState(forcedMissingHours);
-    modal.style.display = 'flex';
-  }
-
-  function checkAndPrepopulateExistingEntry() {
-    updateManualModalState();
-  }
-
-  function submitManualEntryForm() {
-    const selEmp = document.getElementById('manualSelectMitarbeiter');
-    const dateInput = document.getElementById('manualDateInput');
-    const typeSelect = document.getElementById('manualTypeSelect');
-    const hoursInput = document.getElementById('manualHoursInput');
-    const noteInput = document.getElementById('manualNoteInput');
-    const editIdInput = document.getElementById('manualEditId');
-
-    if (!selEmp.value) {
-      alert('Bitte wähle einen Mitarbeiter aus.');
-      selEmp.focus();
-      return;
-    }
-
-    if (!dateInput.value) {
-      alert('Bitte gib ein Datum an.');
-      dateInput.focus();
-      return;
-    }
-
-    const hours = parseFloat(hoursInput.value);
-    if (isNaN(hours) || hours <= 0) {
-      alert('Bitte gib eine gültige Stundenzahl größer 0 ein (z. B. 1, 4 oder 8).');
-      hoursInput.focus();
-      return;
-    }
-
-    addOrUpdateManualEntry({
-      id: editIdInput.value || null,
-      ressourcennummer: selEmp.value,
-      dateIso: dateInput.value,
-      type: typeSelect.value,
-      stunden: hours,
-      note: noteInput.value.trim()
-    });
-
-    document.getElementById('modalManualEntry').style.display = 'none';
-  }
-
-  // ==========================================================================
-  // GLOBALE HILFSFUNKTIONEN FÜR SCHNELLKORREKTUR & ZEILENBEARBEITUNG
-  // ==========================================================================
-  window.applyQuickCorrection = (deduction, targetNet, label) => {
-    const typeSelect = document.getElementById('manualTypeSelect');
-    const hoursInput = document.getElementById('manualHoursInput');
-    const noteInput = document.getElementById('manualNoteInput');
-    const selEmp = document.getElementById('manualSelectMitarbeiter');
-    const dateInput = document.getElementById('manualDateInput');
-    const rec = getRecordedHoursForEmployeeAndDate(selEmp.value, dateInput.value);
-
-    typeSelect.value = 'Arbeitszeit-Abzug';
-    hoursInput.value = Number(deduction).toFixed(1);
-    noteInput.value = `Korrektur: Arbeitszeit von ${formatNumber(rec.netWorkH, 1)}h auf ${formatNumber(targetNet, 1)}h (${label}) reduziert`;
-
-    if (window.updateManualHoursCalcFeedback) {
-      window.updateManualHoursCalcFeedback();
-    }
-    showToast(`Korrektur (-${formatNumber(deduction, 1)} Std.) vorgemerkt. Klicke auf 'Speichern' zum Übernehmen.`, 'info');
-  };
-
-  window.updateManualHoursCalcFeedback = () => {
-    const typeSelect = document.getElementById('manualTypeSelect');
-    const hoursInput = document.getElementById('manualHoursInput');
-    const selEmp = document.getElementById('manualSelectMitarbeiter');
-    const dateInput = document.getElementById('manualDateInput');
-    const feedback = document.getElementById('manualHoursCalcFeedback');
-    const lblHoursTitle = document.getElementById('lblManualHoursTitle');
-    if (!typeSelect || !hoursInput || !feedback) return;
-
-    const isAbzug = (typeSelect.value === 'Arbeitszeit-Abzug');
-    if (lblHoursTitle) {
-      lblHoursTitle.innerHTML = isAbzug 
-        ? `Abzuziehende Stunden (Kürzung):`
-        : `Stunden: <span id="hintFridayHours" style="display:none; font-size:0.75rem; color:#0369a1; font-weight:600; margin-left: 6px;">✨ Freitag: 7 Std. voreingestellt</span>`;
-    }
-
-    if (isAbzug) {
-      const rec = getRecordedHoursForEmployeeAndDate(selEmp ? selEmp.value : '', dateInput ? dateInput.value : '');
-      const deductVal = parseFloat(hoursInput.value) || 0;
-      const resultNet = rec.netWorkH - deductVal;
-
-      feedback.style.display = 'block';
-      if (resultNet >= 0) {
-        feedback.style.background = '#f0fdf4';
-        feedback.style.border = '1px solid #bbf7d0';
-        feedback.style.color = '#166534';
-        feedback.innerHTML = `🟢 Tatsächliche Arbeitszeit nach Abzug: <strong>${formatNumber(rec.netWorkH, 1)}h</strong> - <strong>${formatNumber(deductVal, 1)}h</strong> = <strong>${formatNumber(resultNet, 2)} Std.</strong>`;
-      } else {
-        feedback.style.background = '#fef2f2';
-        feedback.style.border = '1px solid #fecaca';
-        feedback.style.color = '#991b1b';
-        feedback.innerHTML = `⚠️ Hinweis: Der Abzug (${formatNumber(deductVal, 1)}h) ist größer als die bisher erfasste Arbeitszeit (${formatNumber(rec.netWorkH, 1)}h). Arbeitszeit wird auf 0,0 Std. gesetzt.`;
-      }
-    } else {
-      feedback.style.display = 'none';
-    }
-  };
-
-  window.editBewegungsdatenRow = (id) => {
-    const item = state.bewegungsdaten.find(b => b.id === id);
-    if (!item) return;
-
-    const currentHours = Number(item.stunden) || 0;
-    const input = prompt(
-      `Arbeitszeit / Menge für diesen Eintrag bearbeiten:\n\n` +
-      `Mitarbeiter: ${item.name} (${item.ressourcennummer})\n` +
-      `Datum: ${item.dateDisplay}\n` +
-      `Auftrag: ${item.auftragsnummer} ${item.ort ? `(${item.ort})` : ''}\n\n` +
-      `Bisherige Stunden: ${formatNumber(currentHours, 2)} Std.\n\n` +
-      `Bitte neue Stunden eingeben (z. B. 8.0):`,
-      currentHours
-    );
-
-    if (input === null) return;
-    const newHours = parseFloat(input.trim().replace(',', '.'));
-    if (isNaN(newHours) || newHours < 0) {
-      alert('Bitte gib eine gültige Zahl größer oder gleich 0 ein.');
-      return;
-    }
-
-    if (item.preis && currentHours > 0) {
-      item.preis = (item.preis / currentHours) * newHours;
-    }
-    item.stunden = newHours;
-    showToast(`Stunden für ${item.name} am ${item.dateDisplay} auf ${formatNumber(newHours, 2)} Std. geändert.`, 'success');
-    renderApp();
-  };
-
-  window.deleteBewegungsdatenRow = (id) => {
-    const idx = state.bewegungsdaten.findIndex(b => b.id === id);
-    if (idx === -1) return;
-    const item = state.bewegungsdaten[idx];
-
-    if (confirm(`Möchtest du diese Buchungszeile wirklich löschen?\n\n${item.name} – ${item.dateDisplay} – ${item.auftragsnummer} (${formatNumber(item.stunden, 2)} Std.)`)) {
-      state.bewegungsdaten.splice(idx, 1);
-      showToast(`Eintrag (${item.name}, ${formatNumber(item.stunden, 2)} Std.) gelöscht.`, 'info');
-      renderApp();
-    }
-  };
-
-  function setupDragAndDrop(dropZoneId, cardId, fileHandler) {
-    const dropZone = document.getElementById(dropZoneId);
-    const card = document.getElementById(cardId);
-    if (!dropZone || !card) return;
-
-    ['dragenter', 'dragover'].forEach(eventName => {
-      card.addEventListener(eventName, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        card.classList.add('dragover');
+        await addNumberToReferenceFile(col, val, optStaffName);
       });
     });
 
-    ['dragleave', 'drop'].forEach(eventName => {
-      card.addEventListener(eventName, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        card.classList.remove('dragover');
+    // Event Listener für manuelles Speichern (inkl. Referenzdatei-Option)
+    resultsTbody.querySelectorAll(".btn-save-manual").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        const input = resultsTbody.querySelector(`.manual-input[data-id="${id}"]`);
+        const chkRef = resultsTbody.querySelector(`.cb-add-to-ref[data-id="${id}"]`);
+        if (input) {
+          const val = input.value.trim();
+          const targetItem = state.allResults.find(r => r.id === id);
+          const isChecked = chkRef ? chkRef.checked : false;
+          await handleManualSaveWithRefOption(targetItem, val, isChecked);
+        }
       });
     });
 
-    card.addEventListener('drop', (e) => {
-      const dt = e.dataTransfer;
-      const files = dt.files;
-      if (files && files.length > 0) {
-        fileHandler(files[0]);
-      }
+    resultsTbody.querySelectorAll(".manual-input").forEach(input => {
+      input.addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") {
+          const id = input.dataset.id;
+          const val = input.value.trim();
+          const targetItem = state.allResults.find(r => r.id === id);
+          const chkRef = resultsTbody.querySelector(`.cb-add-to-ref[data-id="${id}"]`);
+          const isChecked = chkRef ? chkRef.checked : false;
+          input.blur();
+          await handleManualSaveWithRefOption(targetItem, val, isChecked);
+        }
+      });
     });
   }
 
-  function switchTab(tabId) {
-    state.activeTab = tabId;
+  function applySingleCorrection(cellId, newVal) {
+    const targetItem = state.allResults.find(r => r.id === cellId);
+    if (!targetItem) return;
 
-    document.querySelectorAll('.tab-button').forEach(btn => {
-      if (btn.getAttribute('data-tab') === tabId) {
-        btn.classList.add('active');
-      } else {
-        btn.classList.remove('active');
-      }
-    });
+    const origVal = targetItem.original_value;
+    const colIdx = targetItem.col_idx;
+    let count = 0;
 
-    document.querySelectorAll('.tab-content').forEach(content => {
-      if (content.id === tabId) {
-        content.classList.add('active');
-      } else {
-        content.classList.remove('active');
-      }
-    });
-
-    renderApp();
-  }
-
-  function renderApp() {
-    renderDetailTab();
-    renderWochenTab();
-  }
-
-  // ==========================================================================
-  // 9. NATIVE DRUCKFUNKTION & PRINT VORBEREITUNG
-  // ==========================================================================
-  function triggerPrintWochenbericht() {
-    if (state.activeTab !== 'tabWoche') {
-      switchTab('tabWoche');
+    let tgtWs = null;
+    if (state.targetWorkbook && state.currentTargetSheet) {
+      tgtWs = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
     }
 
-    renderWochenTab();
-    document.body.classList.add('printing-woche');
+    state.allResults.forEach(r => {
+      if (r.id === cellId || (targetItem && r.col_idx === colIdx && r.original_value === origVal)) {
+        r.current_value = newVal;
+        r.is_corrected = (newVal !== r.original_value);
+        state.appliedCorrections[r.id] = newVal;
+        count++;
 
-    setTimeout(() => {
-      window.print();
-      document.body.classList.remove('printing-woche');
-    }, 150);
+        if (tgtWs) {
+          const cell = tgtWs.getRow(r.row).getCell(r.col_idx);
+          if (/^\d{1,4}$/.test(newVal) && targetItem.col_name && /ressource|mitarbeiter|personal/i.test(targetItem.col_name)) {
+            cell.value = WebExcelEngine.padNumber(newVal, 4);
+            cell.numFmt = "0000";
+          } else if (/^\d+$/.test(newVal) && newVal.length < 10 && !newVal.startsWith("0")) {
+            cell.value = parseInt(newVal, 10);
+          } else {
+            cell.value = newVal;
+          }
+        }
+      }
+    });
+
+    updateFilterCounts(state.allResults);
+    renderResultsTable();
+    if (state.timesheetData) renderTimesheetMatrix();
+    renderFullExcelTable();
+
+    if (count > 1) {
+      showToast(`Korrektur "${newVal}" für alle ${count} Zellen mit Wert "${origVal}" übernommen!`);
+    } else {
+      showToast(`Zelle ${targetItem.cell} aktualisiert auf "${newVal}".`);
+    }
   }
 
-  // ==========================================================================
-  // 10. EXCEL EXPORT (GEFILTERTE DETAILANSICHT INKL. ORT & SONDERZEITEN)
-  // ==========================================================================
-  function exportDetailToExcel() {
-    const filtered = getFilteredDetailData();
-    const sorted = sortData(filtered);
+  // --- GENERAL-BUTTON: Datei erstellen & Änderungen übernehmen ---
+  if (btnGeneralApply) {
+    btnGeneralApply.addEventListener("click", async () => {
+      if (!state.allResults || state.allResults.length === 0) {
+        showToast("Bitte führen Sie zuerst eine Prüfung durch.");
+        return;
+      }
 
-    if (sorted.length === 0) {
-      showToast('Keine Daten für den Excel-Export vorhanden.', 'info');
-      return;
+      btnGeneralApply.disabled = true;
+      btnGeneralApply.innerHTML = `<span class="icon">⏳</span> Erstelle korrigierte Excel-Datei...`;
+      showToast("General-Button: Erstelle korrigierte Excel-Datei...");
+
+      // 1. Alle im Formular manuell eingegebenen Werte sammeln
+      resultsTbody.querySelectorAll(".manual-input").forEach(input => {
+        const id = input.dataset.id;
+        const val = input.value.trim();
+        const item = state.allResults.find(r => r.id === id);
+        if (item && val && val !== item.original_value) {
+          item.current_value = val;
+          item.is_corrected = true;
+          state.appliedCorrections[id] = val;
+        }
+      });
+
+      // 2. Excel-Datei 1:1 klonen und aufbauen
+      try {
+        const outBuffer = await generateCorrectedExcel();
+        const baseName = (state.targetFileName || "Datei").replace(/\.[^/.]+$/, "");
+        const outFileName = `${baseName}_KORRIGIERT.xlsx`;
+
+        // 3. Browser-Download anstoßen
+        downloadBuffer(outBuffer, outFileName);
+
+        btnGeneralApply.disabled = false;
+        btnGeneralApply.innerHTML = `<span class="icon">🚀</span> <strong>General-Button: Datei erstellen &amp; Änderungen übernehmen</strong>`;
+
+        // Erfolgsbanner einblenden
+        const banner = document.getElementById("download-success-banner");
+        const nameEl = document.getElementById("download-file-name");
+        if (banner && nameEl) {
+          nameEl.textContent = outFileName;
+          banner.classList.remove("hidden");
+          banner.scrollIntoView({ behavior: "smooth" });
+        }
+
+        if (btnExportExcel) btnExportExcel.classList.remove("hidden");
+        if (btnExportReport) btnExportReport.classList.remove("hidden");
+
+        renderResultsTable();
+        updateFilterCounts(state.allResults);
+        if (state.timesheetData) renderTimesheetMatrix();
+        renderFullExcelTable();
+        showToast(`✅ Datei "${outFileName}" erfolgreich im Download-Ordner gespeichert!`);
+      } catch (err) {
+        console.error(err);
+        btnGeneralApply.disabled = false;
+        btnGeneralApply.innerHTML = `<span class="icon">🚀</span> <strong>General-Button: Datei erstellen &amp; Änderungen übernehmen</strong>`;
+        alert("Fehler beim Erstellen der Datei: " + err.message);
+      }
+    });
+  }
+
+  // --- Nur Zahlendreher korrigieren ---
+  if (btnFixZahlendreher) {
+    btnFixZahlendreher.addEventListener("click", () => {
+      let count = 0;
+      state.allResults.forEach(r => {
+        if ((r.status === "ZAHLENDREHER" || r.status === "ZIFFERENTAUSCH") && r.suggestion) {
+          r.current_value = r.suggestion;
+          r.is_corrected = true;
+          state.appliedCorrections[r.id] = r.suggestion;
+          count++;
+        }
+      });
+      updateFilterCounts(state.allResults);
+      renderResultsTable();
+      if (state.timesheetData) renderTimesheetMatrix();
+      renderFullExcelTable();
+      showToast(`⚡ ${count} Zahlendreher wurden automatisch korrigiert!`);
+    });
+  }
+
+  // --- Zurücksetzen ---
+  if (btnResetFixes) {
+    btnResetFixes.addEventListener("click", () => {
+      if (!confirm("Alle Korrekturen rückgängig machen?")) return;
+      state.allResults.forEach(r => {
+        r.current_value = r.original_value;
+        r.is_corrected = false;
+      });
+      state.appliedCorrections = {};
+      updateFilterCounts(state.allResults);
+      renderResultsTable();
+      if (state.timesheetData) renderTimesheetMatrix();
+      renderFullExcelTable();
+      showToast("Alle Korrekturen wurden zurückgesetzt.");
+    });
+  }
+
+  // --- Nochmals herunterladen ---
+  const btnDownloadAgain = document.getElementById("btn-download-again");
+  if (btnDownloadAgain) {
+    btnDownloadAgain.addEventListener("click", async () => {
+      const outBuffer = await generateCorrectedExcel();
+      const baseName = (state.targetFileName || "Datei").replace(/\.[^/.]+$/, "");
+      downloadBuffer(outBuffer, `${baseName}_KORRIGIERT.xlsx`);
+      showToast("📥 Datei erneut heruntergeladen.");
+    });
+  }
+
+  if (btnExportExcel) {
+    btnExportExcel.addEventListener("click", async () => {
+      const outBuffer = await generateCorrectedExcel();
+      const baseName = (state.targetFileName || "Datei").replace(/\.[^/.]+$/, "");
+      downloadBuffer(outBuffer, `${baseName}_KORRIGIERT.xlsx`);
+      showToast("📥 Korrigierte Excel wird heruntergeladen...");
+    });
+  }
+
+  if (btnExportReport) {
+    btnExportReport.addEventListener("click", async () => {
+      const reportBuffer = await generateReportExcel();
+      const baseName = (state.targetFileName || "Datei").replace(/\.[^/.]+$/, "");
+      downloadBuffer(reportBuffer, `Pruefbericht_${baseName}.xlsx`);
+      showToast("📊 Prüfbericht wird heruntergeladen...");
+    });
+  }
+
+  // --- Excel-Erstellung im 1:1 Original-Layout mit 0000 Formatierung ---
+  async function generateCorrectedExcel() {
+    if (!state.targetWorkbook || !state.currentTargetSheet) {
+      throw new Error("Keine Prüfdatei geladen.");
+    }
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) {
+      throw new Error("Arbeitsblatt in der Prüfdatei nicht gefunden.");
     }
 
-    const exportRows = [
-      ['Datum', 'Auftragsnummer', 'Ort / Baustelle', 'Ressourcennummer', 'Name', 'Kategorie', 'Stunden bzw. Mengen', 'Leistung', 'Beschreibung', 'Preis']
+    // 1. Eingaben aus geöffneten Eingabefeldern in der Prüfliste einsammeln
+    if (resultsTbody) {
+      resultsTbody.querySelectorAll(".manual-input").forEach(input => {
+        const id = input.dataset.id;
+        const val = input.value.trim();
+        const item = state.allResults ? state.allResults.find(r => r.id === id) : null;
+        if (item && val && val !== item.original_value) {
+          item.current_value = val;
+          item.is_corrected = true;
+          state.appliedCorrections[id] = val;
+        }
+      });
+    }
+
+    // 2. Alle Prüfergebnisse verarbeiten:
+    // Sowohl vom Nutzer angewendete Korrekturen als auch alle automatischen Korrekturvorschläge
+    // (Zahlendreher, Zifferntausch, Tippfehler, Ziffer zuviel/fehlt, 0000-Formatierung)
+    // werden direkt in die Arbeitsmappe geschrieben.
+    if (state.allResults && Array.isArray(state.allResults)) {
+      state.allResults.forEach(r => {
+        let valToApply = null;
+
+        // A. Manuell angewendete Korrektur aus state.appliedCorrections
+        if (state.appliedCorrections && state.appliedCorrections[r.id] !== undefined && state.appliedCorrections[r.id] !== "") {
+          valToApply = state.appliedCorrections[r.id];
+        }
+        // B. Im Resultat abweichender aktueller Wert
+        else if (r.current_value && r.current_value !== r.original_value) {
+          valToApply = r.current_value;
+          state.appliedCorrections[r.id] = r.current_value;
+        }
+        // C. Eindeutige Korrekturvorschläge (Zahlendreher, Tippfehler, Zifferntausch, etc.)
+        else if (r.suggestion && r.status !== "DATUM_WARNUNG" && r.status !== "NICHT_EXISTENT" && r.status !== "LEER") {
+          valToApply = r.suggestion;
+          state.appliedCorrections[r.id] = r.suggestion;
+          r.current_value = r.suggestion;
+          r.is_corrected = true;
+        }
+
+        if (valToApply !== null && valToApply !== undefined) {
+          const row = ws.getRow(r.row);
+          if (row) {
+            const cell = row.getCell(r.col_idx);
+            const valStr = String(valToApply).trim();
+
+            if (r.col_idx === 1) {
+              cell.value = valStr;
+              cell.numFmt = "DD.MM.YYYY";
+            } else if (/^\d+$/.test(valStr) && valStr.startsWith("0") && valStr.length > 1) {
+              cell.value = parseInt(valStr, 10);
+              cell.numFmt = "0000";
+            } else if (/^\d+$/.test(valStr)) {
+              cell.value = parseInt(valStr, 10);
+              if (valStr.length <= 4) cell.numFmt = "0000";
+            } else if (/^-?\d+\.\d+$/.test(valStr.replace(",", "."))) {
+              cell.value = parseFloat(valStr.replace(",", "."));
+            } else {
+              cell.value = valStr;
+            }
+          }
+        }
+      });
+    }
+
+    // 2.5. Alle weiteren manuellen Korrekturen aus state.appliedCorrections
+    // (z. B. aus der Wochenübersicht, Zeilen-Modalen oder Gesamttabelle)
+    // explizit in die Arbeitsmappe schreiben, auch wenn die Spalte nicht in state.allResults war.
+    let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+    let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+
+    if (state.appliedCorrections) {
+      Object.entries(state.appliedCorrections).forEach(([key, valToApply]) => {
+        if (valToApply !== null && valToApply !== undefined && key.includes("_")) {
+          const parts = key.split("_");
+          if (parts.length === 2) {
+            const rNum = parseInt(parts[0], 10);
+            const cNum = parseInt(parts[1], 10);
+            if (!isNaN(rNum) && !isNaN(cNum) && rNum > 0 && cNum > 0) {
+              const row = ws.getRow(rNum);
+              if (row) {
+                const cell = row.getCell(cNum);
+                const valStr = String(valToApply).trim();
+
+                if (cNum === dateColIdx || cNum === 1) {
+                  if (valStr) {
+                    const dParts = valStr.split("-");
+                    let dispDate = valStr;
+                    if (dParts.length === 3) {
+                      dispDate = `${dParts[2]}.${dParts[1]}.${dParts[0]}`;
+                    }
+                    cell.value = dispDate;
+                    cell.numFmt = "DD.MM.YYYY";
+                  } else {
+                    cell.value = "";
+                  }
+                } else if (cNum === resColIdx || cNum === 3) {
+                  let cleanRes = valStr.replace(/[,.]0+$/, "").trim();
+                  if (/^\d{1,4}$/.test(cleanRes)) {
+                    cleanRes = WebExcelEngine.padNumber(cleanRes, 4);
+                    cell.value = parseInt(cleanRes, 10);
+                    cell.numFmt = "0000";
+                  } else {
+                    cell.value = cleanRes;
+                  }
+                } else if (/^-?\d+(\.\d+)?$/.test(valStr.replace(",", "."))) {
+                  const num = parseFloat(valStr.replace(",", "."));
+                  if (!isNaN(num)) {
+                    cell.value = num;
+                  } else {
+                    cell.value = valStr;
+                  }
+                } else {
+                  cell.value = valStr;
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    // 3. Spalten-Formatierungen setzen (Datum DD.MM.YYYY, Ressource 0000)
+    dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+    resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+
+    const maxCols = Math.max(ws.columnCount || 0, ws.actualRowCount ? ws.actualColumnCount || 0 : 0, 10);
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length : 0));
+
+    for (let colIdx = 1; colIdx <= maxCols; colIdx++) {
+      const col = ws.getColumn(colIdx);
+      const isDateCol = (colIdx === dateColIdx || colIdx === 1);
+      const isResCol = (colIdx === resColIdx || colIdx === 3);
+
+      if (isDateCol) {
+        col.numFmt = "DD.MM.YYYY";
+        for (let r = 2; r <= maxRows; r++) {
+          const cell = ws.getRow(r).getCell(colIdx);
+          if (typeof cell.value === "number") {
+            cell.numFmt = "DD.MM.YYYY";
+          }
+        }
+      } else if (isResCol) {
+        col.numFmt = "0000";
+        for (let r = 2; r <= maxRows; r++) {
+          const cell = ws.getRow(r).getCell(colIdx);
+          cell.numFmt = "0000";
+          if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
+            const s = WebExcelEngine.extractCellValue(cell.value, cell).replace(/[,.]0+$/, "").trim();
+            if (/^\d+$/.test(s)) {
+              cell.value = parseInt(s, 10);
+            }
+          }
+        }
+      }
+    }
+
+    return await state.targetWorkbook.xlsx.writeBuffer();
+  }
+
+  // --- Detaillierten Prüfbericht als Excel erstellen ---
+  async function generateReportExcel() {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Prüfbericht");
+
+    ws.columns = [
+      { header: "Zelle", key: "cell", width: 10 },
+      { header: "Zeile", key: "row", width: 8 },
+      { header: "Spalte", key: "col_name", width: 22 },
+      { header: "Originalwert", key: "orig", width: 18 },
+      { header: "Aktueller Wert", key: "curr", width: 18 },
+      { header: "Status", key: "status_lbl", width: 25 },
+      { header: "Vorschlag", key: "sugg", width: 18 },
+      { header: "Diagnosedetails", key: "detail", width: 45 },
+      { header: "Wurde Korrigiert?", key: "is_corr", width: 18 }
     ];
 
-    for (const item of sorted) {
-      exportRows.push([
-        item.dateDisplay,
-        item.auftragsnummer,
-        item.ort,
-        item.ressourcennummer,
-        item.name,
-        item.kategorie,
-        item.stunden,
-        item.leistung,
-        item.beschreibung,
-        item.preis
-      ]);
-    }
+    const hdrRow = ws.getRow(1);
+    hdrRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    hdrRow.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1E293B" }
+    };
 
-    try {
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet(exportRows);
-      XLSX.utils.book_append_sheet(wb, ws, 'Gefilterte Auswertung');
-      const filename = `Tagesberichte_Auswertung_${formatDateIso(new Date())}.xlsx`;
-      XLSX.writeFile(wb, filename);
-      showToast(`Excel-Export erfolgreich: ${filename}`, 'success');
-    } catch (e) {
-      console.error('Fehler beim Export:', e);
-      showToast('Fehler beim Excel-Export: ' + e.message, 'error');
-    }
+    state.allResults.forEach(r => {
+      ws.addRow({
+        cell: r.cell,
+        row: r.row,
+        col_name: r.col_name,
+        orig: r.original_value,
+        curr: r.current_value,
+        status_lbl: r.status_label,
+        sugg: r.suggestion || "—",
+        detail: r.detail,
+        is_corr: r.is_corrected ? "Ja" : "Nein"
+      });
+    });
+
+    return await wb.xlsx.writeBuffer();
   }
 
-  // ==========================================================================
-  // 11. DEMO-DATEN LADEN (MIT BEISPIEL-ABWESENHEITEN)
-  // ==========================================================================
-  function loadDemoData() {
-    saveStammdatenToStorage(DEMO_STAMMDATEN, DEMO_AUFTRAEGE, 'Demo_Stammdaten.xlsx');
-    state.manualEntries = [...DEMO_MANUAL_ENTRIES];
-    saveManualEntriesToStorage();
-    state.bewegungsdatenFilename = 'Demo_Tagesberichte.xlsx';
-    processBewegungsdatenRows(DEMO_BEWEGUNGSDATEN_RAW);
-    showToast('Demo-Daten geladen: 12 Ressourcen, 4 Orte, 3 Abwesenheiten & 35 Tagesberichte', 'success');
+  function downloadBuffer(buffer, fileName) {
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 1000);
   }
 
-  // ==========================================================================
-  // 12. HILFSFUNKTIONEN (DATUM, ZAHLEN, FORMATIERUNG, BADGES)
-  // ==========================================================================
-  function parseAnyDate(val) {
-    if (!val) return null;
-    if (val instanceof Date) {
-      return isNaN(val.getTime()) ? null : val;
+  // ==============================================================================
+  // Arbeitszeiten-Übersicht & Mitarbeiter-Matrix (Schritt 4)
+  // ==============================================================================
+
+  function populateTimesheetColSelects(tgtHeaders) {
+    if (!selectTsDateCol || !selectTsHoursCol || !selectTsResourceCol) return;
+
+    selectTsDateCol.innerHTML = "";
+    selectTsHoursCol.innerHTML = "";
+    selectTsResourceCol.innerHTML = "";
+
+    // 1. Suche nach Datumsspalte
+    let bestDateCol = null;
+    tgtHeaders.forEach(h => {
+      const lower = h.name.toLowerCase();
+      if (!bestDateCol && (lower.includes("datum") || lower.includes("date") || lower.includes("tag") || lower.includes("zeitpunkt") || lower.includes("buchung"))) {
+        bestDateCol = h.colNum;
+      }
+    });
+    if (!bestDateCol && tgtHeaders.length > 0) {
+      bestDateCol = tgtHeaders[0].colNum;
     }
 
-    if (typeof val === 'number') {
-      const date = new Date(Math.round((val - 25569) * 86400 * 1000));
-      return isNaN(date.getTime()) ? null : date;
+    // 2. Suche nach Stundenspalte / Menge
+    let bestHoursCol = null;
+    tgtHeaders.forEach(h => {
+      const lower = h.name.toLowerCase();
+      if (!bestHoursCol && (lower.includes("stunde") || lower.includes("zeit") || lower.includes("dauer") || lower.includes("ist-stunden") || lower.includes("menge") || lower.includes("std") || lower === "h")) {
+        bestHoursCol = h.colNum;
+      }
+    });
+    if (!bestHoursCol) {
+      const mengeCol = tgtHeaders.find(h => h.name.toLowerCase().includes("menge") || h.letter === "D" || h.letter === "G");
+      if (mengeCol) bestHoursCol = mengeCol.colNum;
+      else if (tgtHeaders.length >= 4) bestHoursCol = tgtHeaders[3].colNum;
     }
 
-    const str = String(val).trim();
-    if (!str) return null;
+    // 3. Suche nach Ressourcenspalte
+    let bestResCol = null;
 
-    const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (isoMatch) {
-      const d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
-      return isNaN(d.getTime()) ? null : d;
+    // Priorität 1: Falls Mitarbeiter geladen sind, prüfe die ersten Zeilen der Ziel-Tabelle auf die meisten Treffer mit Mitarbeiternummern!
+    if (state.staffList && state.staffList.length > 0 && state.targetWorkbook && state.currentTargetSheet) {
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (ws) {
+        const colMatchCounts = {};
+        const maxSampleRows = Math.min(Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0)), 80);
+        for (let r = 2; r <= maxSampleRows; r++) {
+          const sampleRow = ws.getRow(r);
+          if (!sampleRow) continue;
+          tgtHeaders.forEach(h => {
+            const val = WebExcelEngine.extractCellValue(sampleRow.getCell(h.colNum).value, sampleRow.getCell(h.colNum));
+            if (val && getStaffName(val)) {
+              colMatchCounts[h.colNum] = (colMatchCounts[h.colNum] || 0) + 1;
+            }
+          });
+        }
+        let maxMatches = 0;
+        let matchedColNum = null;
+        for (const [colNumStr, count] of Object.entries(colMatchCounts)) {
+          if (count > maxMatches) {
+            maxMatches = count;
+            matchedColNum = parseInt(colNumStr, 10);
+          }
+        }
+        if (maxMatches >= 1) {
+          bestResCol = matchedColNum;
+        }
+      }
     }
 
-    const deMatch = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
-    if (deMatch) {
-      const d = new Date(parseInt(deMatch[3], 10), parseInt(deMatch[2], 10) - 1, parseInt(deMatch[1], 10));
-      return isNaN(d.getTime()) ? null : d;
+    // Priorität 2: Suche nach eindeutigen Spalten-Überschriften
+    if (!bestResCol) {
+      tgtHeaders.forEach(h => {
+        const lower = h.name.toLowerCase();
+        if (!bestResCol && (
+          lower.includes("ressource") || lower.includes("resource") || lower.includes("personalnummer") ||
+          lower.includes("persnr") || lower.includes("pers-nr") || lower.includes("personal-nr") ||
+          lower.includes("mitarbeiternr") || lower.includes("mitarbeiter-nr") || lower.includes("mitarbeiter") ||
+          lower.includes("monteur") || lower.includes("techniker") || lower.includes("arbeiter") ||
+          lower.includes("personal") || lower.includes("manr") || lower.includes("ma-nr") || lower.includes("kollege")
+        )) {
+          bestResCol = h.colNum;
+        }
+      });
     }
 
-    const slashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-    if (slashMatch) {
-      const d = new Date(parseInt(slashMatch[3], 10), parseInt(slashMatch[1], 10) - 1, parseInt(slashMatch[2], 10));
-      return isNaN(d.getTime()) ? null : d;
+    // Priorität 3: Mapping-Prüfung
+    if (!bestResCol && state.mapping) {
+      const mappedRes = state.mapping.find(m => m.selected && m.ref_col_name &&
+        ["ressource", "resource", "personalnummer", "persnr"].some(k => m.ref_col_name.toLowerCase().includes(k))
+      );
+      if (mappedRes) bestResCol = mappedRes.target_col_idx;
     }
 
-    const fallback = new Date(str);
-    return isNaN(fallback.getTime()) ? null : fallback;
+    // Priorität 4: Fallback auf Spalte C / 3
+    if (!bestResCol) {
+      const colC = tgtHeaders.find(h => h.letter === "C" || h.colNum === 3);
+      if (colC) bestResCol = colC.colNum;
+      else if (tgtHeaders.length >= 3) bestResCol = tgtHeaders[2].colNum;
+    }
+
+    // Optionen für Datum
+    tgtHeaders.forEach(h => {
+      const opt = document.createElement("option");
+      opt.value = h.colNum;
+      opt.textContent = `Spalte ${h.letter}: ${h.name}`;
+      if (h.colNum === bestDateCol) opt.selected = true;
+      selectTsDateCol.appendChild(opt);
+    });
+    const optNoDate = document.createElement("option");
+    optNoDate.value = "none";
+    optNoDate.textContent = "-- Ohne Datum (Gesamtüberblick) --";
+    selectTsDateCol.appendChild(optNoDate);
+
+    // Optionen für Stunden
+    tgtHeaders.forEach(h => {
+      const opt = document.createElement("option");
+      opt.value = h.colNum;
+      opt.textContent = `Spalte ${h.letter}: ${h.name}`;
+      if (h.colNum === bestHoursCol) opt.selected = true;
+      selectTsHoursCol.appendChild(opt);
+    });
+    const optFixedOne = document.createElement("option");
+    optFixedOne.value = "fixed_one";
+    optFixedOne.textContent = "-- Pauschal 1 Std pro Buchung --";
+    selectTsHoursCol.appendChild(optFixedOne);
+
+    // Optionen für Ressourcen
+    tgtHeaders.forEach(h => {
+      const opt = document.createElement("option");
+      opt.value = h.colNum;
+      opt.textContent = `Spalte ${h.letter}: ${h.name}`;
+      if (h.colNum === bestResCol) opt.selected = true;
+      selectTsResourceCol.appendChild(opt);
+    });
   }
 
-  function parseGermanNumber(val) {
-    if (typeof val === 'number') return isNaN(val) ? 0 : val;
-    if (!val) return 0;
-    let clean = String(val).replace(/[^0-9,.-]/g, '').trim();
-    if (clean.includes(',') && clean.includes('.')) {
-      clean = clean.replace(/\./g, '').replace(',', '.');
-    } else if (clean.includes(',')) {
-      clean = clean.replace(',', '.');
+  // Event Listener für Spaltenauswahl & Filter der Arbeitszeiten
+  [selectTsDateCol, selectTsHoursCol, selectTsResourceCol, chkTsOnlyStaff].forEach(sel => {
+    if (sel) {
+      sel.addEventListener("change", () => {
+        if (state.targetWorkbook && state.currentTargetSheet) {
+          renderTimesheetMatrix();
+          populateFullTableFilters();
+          renderFullExcelTable();
+        }
+      });
     }
-    const num = parseFloat(clean);
+  });
+
+  function parseRowDate(cellVal, cell) {
+    if (!cellVal && cellVal !== 0) return { isoKey: "ohne_datum", displayDate: "Ohne Datum", weekday: "", label: "Ohne Datum" };
+
+    let d = null;
+    if (cellVal instanceof Date && !isNaN(cellVal.getTime())) {
+      d = cellVal;
+    } else if (typeof cellVal === "number" && cellVal > 1000 && cellVal < 100000) {
+      // Excel-Seriennummer (25569 Tage zwischen 01.01.1900 und 01.01.1970)
+      const ms = Math.round((cellVal - 25569) * 86400 * 1000);
+      d = new Date(ms);
+    } else {
+      let str = "";
+      if (typeof cellVal === "object" && cellVal) {
+        str = String(cellVal.result || cellVal.text || "").trim();
+      } else {
+        str = String(cellVal).trim();
+      }
+
+      // Format TT.MM.JJJJ oder TT.MM.JJ
+      const deMatch = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
+      if (deMatch) {
+        let day = parseInt(deMatch[1], 10);
+        let month = parseInt(deMatch[2], 10) - 1;
+        let year = parseInt(deMatch[3], 10);
+        if (year < 100) year += 2000;
+        d = new Date(year, month, day);
+      } else {
+        // Format JJJJ-MM-TT
+        const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        if (isoMatch) {
+          d = new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+        } else {
+          const parsed = Date.parse(str);
+          if (!isNaN(parsed)) {
+            d = new Date(parsed);
+          }
+        }
+      }
+    }
+
+    if (!d || isNaN(d.getTime())) {
+      const clean = String(cellVal).trim() || "Ohne Datum";
+      return { isoKey: clean, displayDate: clean, weekday: "", label: clean };
+    }
+
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const mm = pad2(d.getMonth() + 1);
+    const dd = pad2(d.getDate());
+    const isoKey = `${yyyy}-${mm}-${dd}`;
+    const displayDate = `${dd}.${mm}.${yyyy}`;
+    const WEEKDAYS = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+    const weekday = WEEKDAYS[d.getDay()] || "";
+    const label = weekday ? `${weekday}, ${dd}.${mm}.` : displayDate;
+
+    return { isoKey, displayDate, weekday, label };
+  }
+
+  function parseHours(cellVal) {
+    if (cellVal === null || cellVal === undefined || cellVal === "") return 0;
+    if (typeof cellVal === "number") return isNaN(cellVal) ? 0 : cellVal;
+
+    let str = "";
+    if (typeof cellVal === "object") {
+      str = String(cellVal.result || cellVal.text || "").trim();
+    } else {
+      str = String(cellVal).trim();
+    }
+    if (!str) return 0;
+
+    // Zeitformat z.B. "08:30" oder "8:15"
+    const timeMatch = str.match(/^(\d{1,2}):(\d{2})$/);
+    if (timeMatch) {
+      const h = parseInt(timeMatch[1], 10);
+      const m = parseInt(timeMatch[2], 10);
+      return h + (m / 60);
+    }
+
+    // Komma durch Punkt ersetzen und Zahlen filtern
+    str = str.replace(/[^0-9,.-]/g, "").replace(",", ".");
+    const num = parseFloat(str);
     return isNaN(num) ? 0 : num;
   }
 
-  function formatDateIso(d) {
-    if (!d) return '';
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+  function formatHoursDe(hours) {
+    if (hours === 0) return "0,0";
+    return Number(hours).toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 2 });
   }
 
-  function formatGermanDate(d) {
-    if (!d) return '--';
-    const day = String(d.getDate()).padStart(2, '0');
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const y = d.getFullYear();
-    return `${day}.${m}.${y}`;
-  }
+  function renderTimesheetMatrix() {
+    if (!timesheetSection || !state.targetWorkbook || !state.currentTargetSheet) {
+      if (timesheetSection) timesheetSection.classList.add("hidden");
+      return;
+    }
 
-  function formatGermanDateTime(d) {
-    if (!d) return '--';
-    const dateStr = formatGermanDate(d);
-    const h = String(d.getHours()).padStart(2, '0');
-    const min = String(d.getMinutes()).padStart(2, '0');
-    return `${dateStr}, ${h}:${min}`;
-  }
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) {
+      timesheetSection.classList.add("hidden");
+      return;
+    }
 
-  function getWeekdayShort(d) {
-    const days = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
-    return days[d.getDay()] || '';
-  }
+    const dateColVal = selectTsDateCol?.value;
+    const isNoDate = (dateColVal === "none");
+    const dateColIdx = isNoDate ? null : parseInt(dateColVal, 10);
 
-  function formatNumber(num, decimals = 2) {
-    const n = Number(num) || 0;
-    return n.toLocaleString('de-DE', {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals
+    const hoursColVal = selectTsHoursCol?.value;
+    const isFixedHours = (hoursColVal === "fixed_one");
+    const hoursColIdx = isFixedHours ? null : parseInt(hoursColVal, 10);
+
+    const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+
+    const onlyStaff = chkTsOnlyStaff ? chkTsOnlyStaff.checked : true;
+    const hasStaffList = state.staffList && state.staffList.length > 0;
+
+    let skippedNonStaffRows = 0;
+    const skippedNonStaffResources = new Set();
+
+    // Maps für Aggregation
+    const dateMap = new Map();
+    const empMap = new Map();
+
+    let grandTotalHours = 0;
+    let grandTotalEntries = 0;
+
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    for (let r = 2; r <= maxRows; r++) {
+      const row = ws.getRow(r);
+      if (!row) continue;
+
+      let hasData = false;
+      row.eachCell(() => { hasData = true; });
+      if (!hasData) continue;
+
+      // 1. Ressource ermitteln (inklusive etwaiger Benutzer-Korrekturen)
+      const cellKey = `${r}_${resColIdx}`;
+      let rawRes = (state.appliedCorrections && state.appliedCorrections[cellKey] !== undefined)
+        ? String(state.appliedCorrections[cellKey]).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+      rawRes = rawRes.replace(/[,.]0+$/, "");
+
+      if (!rawRes) continue; // Zeilen ohne Ressourcennummer überspringen
+
+      // Mitarbeiter-Name aus Stammdaten ermitteln
+      const empNameFromMap = getStaffName(rawRes);
+      const isKnownWorker = Boolean(empNameFromMap);
+
+      // WICHTIG: Wenn Mitarbeiterdatei hinterlegt ist und Filter aktiv ist,
+      // ausschließlich echte Arbeiter anzeigen! Fremd-/Maschinen-Ressourcen überspringen.
+      if (hasStaffList && onlyStaff && !isKnownWorker) {
+        skippedNonStaffRows++;
+        skippedNonStaffResources.add(rawRes);
+        continue;
+      }
+
+      const paddedRes = (/^\d+$/.test(rawRes) && rawRes.length < 4) ? WebExcelEngine.padNumber(rawRes, 4) : rawRes;
+      const displayRes = paddedRes;
+      const empName = empNameFromMap || `Ressource ${displayRes}`;
+      const hasCustomName = Boolean(empNameFromMap);
+
+      // 2. Datum ermitteln
+      let dateObj = null;
+      if (dateColIdx) {
+        const cell = row.getCell(dateColIdx);
+        dateObj = parseRowDate(cell.value, cell);
+      } else {
+        dateObj = { isoKey: "gesamt", displayDate: "Gesamtzeit", weekday: "", label: "Gesamtzeit" };
+      }
+
+      // 3. Stunden ermitteln
+      let hours = 0;
+      if (isFixedHours) {
+        hours = 1;
+      } else if (hoursColIdx) {
+        const cell = row.getCell(hoursColIdx);
+        hours = parseHours(cell.value);
+      } else {
+        hours = 1;
+      }
+
+      // Datum aggregieren
+      if (!dateMap.has(dateObj.isoKey)) {
+        dateMap.set(dateObj.isoKey, {
+          isoKey: dateObj.isoKey,
+          displayDate: dateObj.displayDate,
+          weekday: dateObj.weekday,
+          label: dateObj.label,
+          totalHours: 0
+        });
+      }
+      dateMap.get(dateObj.isoKey).totalHours += hours;
+
+      // Mitarbeiter aggregieren (Eindeutiger Schlüssel: empName falls bekannt, sonst displayRes)
+      const empKey = isKnownWorker ? empName : displayRes;
+      if (!empMap.has(empKey)) {
+        empMap.set(empKey, {
+          resource: displayRes,
+          name: empName,
+          hasCustomName: hasCustomName,
+          hoursByDate: {},
+          totalHours: 0,
+          totalEntries: 0
+        });
+      }
+      const empRecord = empMap.get(empKey);
+      empRecord.hoursByDate[dateObj.isoKey] = (empRecord.hoursByDate[dateObj.isoKey] || 0) + hours;
+      empRecord.totalHours += hours;
+      empRecord.totalEntries += 1;
+
+      grandTotalHours += hours;
+      grandTotalEntries += 1;
+    }
+
+    // Sortierung der Kalendertage
+    const sortedDates = Array.from(dateMap.values()).sort((a, b) => a.isoKey.localeCompare(b.isoKey));
+
+    // Sortierung der Mitarbeiter nach Ressourcennummer aufsteigend
+    const sortedEmployees = Array.from(empMap.values()).sort((a, b) => {
+      const numA = parseInt(a.resource, 10);
+      const numB = parseInt(b.resource, 10);
+      if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+      return a.resource.localeCompare(b.resource);
+    });
+
+    state.timesheetData = {
+      sortedDates,
+      employees: sortedEmployees,
+      grandTotalHours,
+      grandTotalEntries
+    };
+
+    // Status-Badge aktualisieren
+    if (tsStaffStatusBadge) {
+      if (hasStaffList) {
+        const workerCount = sortedEmployees.length;
+        const totalStaffInList = state.staffList.length;
+        if (onlyStaff) {
+          tsStaffStatusBadge.className = "badge badge-ok";
+          let badgeHtml = `👷 ${workerCount} von ${totalStaffInList} Arbeiter erfasst`;
+          if (skippedNonStaffRows > 0) {
+            const resListStr = Array.from(skippedNonStaffResources).sort().join(", ");
+            badgeHtml += ` • <span title="Ausgeblendete Ressourcen: ${escapeHtml(resListStr)}">🚫 ${skippedNonStaffRows} Buchung(en) Fremd-Ressourcen ausgeblendet (${skippedNonStaffResources.size} Nr.: ${escapeHtml(resListStr)})</span>`;
+          }
+          tsStaffStatusBadge.innerHTML = badgeHtml;
+        } else {
+          tsStaffStatusBadge.className = "badge badge-info";
+          tsStaffStatusBadge.innerHTML = `⚠️ Alle ${sortedEmployees.length} Ressourcen aktiv (inkl. Fremd/Maschinen)`;
+        }
+      } else {
+        tsStaffStatusBadge.className = "badge badge-leer-ok";
+        tsStaffStatusBadge.innerHTML = `⚠️ Keine Mitarbeiterdatei geladen (alle Ressourcen werden angezeigt)`;
+      }
+    }
+
+    if (sortedEmployees.length === 0) {
+      timesheetThead.innerHTML = `<tr><th class="ts-col-emp">Mitarbeiter / Ressource</th><th>Status</th></tr>`;
+      let emptyMsg = "Keine Buchungen in der ausgewählten Ressourcenspalte gefunden.";
+      if (hasStaffList && onlyStaff && skippedNonStaffRows > 0) {
+        const resListStr = Array.from(skippedNonStaffResources).sort().join(", ");
+        emptyMsg = `Es wurden keine Arbeiter aus der Mitarbeiterdatei gefunden (${skippedNonStaffRows} Buchungen anderer Ressourcen [${resListStr}] ausgeblendet).`;
+      }
+      timesheetTbody.innerHTML = `<tr><td colspan="2" style="text-align: center; padding: 1.5rem; color: var(--text-muted);">${escapeHtml(emptyMsg)}</td></tr>`;
+      timesheetTfoot.innerHTML = "";
+      timesheetSection.classList.remove("hidden");
+      return;
+    }
+
+    // THEAD
+    timesheetThead.innerHTML = `
+      <tr>
+        <th class="ts-col-emp">Mitarbeiter / Ressource</th>
+        ${sortedDates.map(d => `<th title="${escapeHtml(d.displayDate)}">${escapeHtml(d.label)}</th>`).join("")}
+        <th class="ts-col-total">Gesamtstunden</th>
+        <th>Buchungen</th>
+      </tr>
+    `;
+
+    // TBODY
+    timesheetTbody.innerHTML = sortedEmployees.map(emp => {
+      const dateCells = sortedDates.map(d => {
+        const h = emp.hoursByDate[d.isoKey] || 0;
+        if (h > 0) {
+          return `<td><span class="ts-hour-badge ts-hour-clickable" data-res="${escapeHtml(emp.resource)}" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="✏️ Klicken, um Buchung (${formatHoursDe(h)} Std) von ${escapeHtml(emp.name)} am ${escapeHtml(d.displayDate)} zu bearbeiten oder neu einzutragen">${formatHoursDe(h)}</span></td>`;
+        } else {
+          return `<td><span class="ts-hour-empty-clickable" data-res="${escapeHtml(emp.resource)}" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="➕ Klicken, um neue Buchung für ${escapeHtml(emp.name)} am ${escapeHtml(d.displayDate)} einzutragen">-</span></td>`;
+        }
+      }).join("");
+
+      const isTargetEmp = Boolean(state.highlightEmployeeRes && (
+        emp.resource === state.highlightEmployeeRes ||
+        (/^\d+$/.test(emp.resource) && /^\d+$/.test(state.highlightEmployeeRes) && parseInt(emp.resource, 10) === parseInt(state.highlightEmployeeRes, 10))
+      ));
+      const rowClass = isTargetEmp ? "ts-row-highlight" : "";
+
+      return `
+        <tr class="${rowClass}">
+          <td class="ts-cell-emp">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+              <span class="ts-emp-clickable" data-res="${escapeHtml(emp.resource)}" style="font-weight: 600; color: #1e293b;" title="🔍 Klicken, um alle Zeilen von ${escapeHtml(emp.name)} in der Gesamttabelle anzuzeigen">${escapeHtml(emp.name)}</span>
+              <span class="badge ${emp.hasCustomName ? 'badge-ok' : 'badge-leer-ok'}">Nr. ${escapeHtml(emp.resource)}</span>
+            </div>
+          </td>
+          ${dateCells}
+          <td class="ts-cell-total"><span class="ts-hour-badge ts-hour-total">${formatHoursDe(emp.totalHours)} h</span></td>
+          <td>${emp.totalEntries}</td>
+        </tr>
+      `;
+    }).join("");
+
+    if (state.highlightEmployeeRes) {
+      setTimeout(() => {
+        state.highlightEmployeeRes = null;
+      }, 3000);
+    }
+
+    // TFOOT
+    timesheetTfoot.innerHTML = `
+      <tr>
+        <td class="ts-cell-emp"><strong>Gesamtsumme Tag:</strong></td>
+        ${sortedDates.map(d => `<td><strong>${formatHoursDe(d.totalHours)} h</strong></td>`).join("")}
+        <td class="ts-cell-total"><span class="ts-grand-total">${formatHoursDe(grandTotalHours)} h</span></td>
+        <td><strong>${grandTotalEntries}</strong></td>
+      </tr>
+    `;
+
+    timesheetSection.classList.remove("hidden");
+
+    // Event Listener für interaktiven Klick auf ZAHLEN (Bearbeiten / Wählen)
+    timesheetTbody.querySelectorAll(".ts-hour-clickable").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.modalCaller = "timesheet";
+        const res = el.dataset.res;
+        const dateIso = el.dataset.date;
+        const matchingRows = findRowsForResourceAndDate(res, dateIso);
+
+        if (matchingRows.length === 1) {
+          openEditRowModal(matchingRows[0].rowIdx);
+        } else if (matchingRows.length > 1) {
+          openChooseBookingModal(res, dateIso, matchingRows);
+        } else {
+          openInsertRowModal(null, { res: res, dateIso: dateIso });
+        }
+      });
+    });
+
+    // Event Listener für interaktiven Klick auf FREIFELDER (Neue Zeile nachtragen)
+    timesheetTbody.querySelectorAll(".ts-hour-empty-clickable").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.modalCaller = "timesheet";
+        const res = el.dataset.res;
+        const dateIso = el.dataset.date;
+        openInsertRowModal(null, { res: res, dateIso: dateIso });
+      });
+    });
+
+    timesheetTbody.querySelectorAll(".ts-emp-clickable").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        drillDownToFullTable(el.dataset.res, null);
+      });
     });
   }
 
-  function formatCurrency(num) {
-    const n = Number(num) || 0;
-    return n.toLocaleString('de-DE', {
-      style: 'currency',
-      currency: 'EUR'
+  async function generateTimesheetExcel() {
+    if (!state.timesheetData || state.timesheetData.employees.length === 0) {
+      alert("Es liegen noch keine Daten für die Arbeitszeiten-Übersicht vor.");
+      return null;
+    }
+
+    const { sortedDates, employees, grandTotalHours, grandTotalEntries } = state.timesheetData;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Arbeitszeiten_Uebersicht");
+
+    const cols = [
+      { header: "Mitarbeiter", key: "name", width: 28 },
+      { header: "Ressource", key: "res", width: 14 }
+    ];
+
+    sortedDates.forEach((d, i) => {
+      cols.push({
+        header: d.label || d.displayDate,
+        key: `d_${i}`,
+        width: 14
+      });
+    });
+
+    cols.push({ header: "Gesamt (Std)", key: "total", width: 16 });
+    cols.push({ header: "Buchungen", key: "entries", width: 12 });
+
+    ws.columns = cols;
+
+    // Header styling
+    const headerRow = ws.getRow(1);
+    headerRow.height = 28;
+    headerRow.eachCell((cell, colNum) => {
+      cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF0F766E" } // Teal header
+      };
+      cell.alignment = { vertical: "middle", horizontal: (colNum <= 1 ? "left" : "center"), wrapText: true };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFCBD5E1" } },
+        bottom: { style: "medium", color: { argb: "FF0D5F58" } },
+        left: { style: "thin", color: { argb: "FFCBD5E1" } },
+        right: { style: "thin", color: { argb: "FFCBD5E1" } }
+      };
+    });
+
+    // Data rows
+    employees.forEach(emp => {
+      const rowValues = [emp.name, emp.resource];
+      sortedDates.forEach(d => {
+        const h = emp.hoursByDate[d.isoKey] || 0;
+        rowValues.push(h > 0 ? h : null);
+      });
+      rowValues.push(emp.totalHours);
+      rowValues.push(emp.totalEntries);
+
+      const row = ws.addRow(rowValues);
+      row.height = 22;
+
+      // Spalte B (Ressource) als 0000 formatieren
+      const resCell = row.getCell(2);
+      resCell.numFmt = "0000";
+      resCell.alignment = { horizontal: "center", vertical: "middle" };
+
+      // Datumsspalten formatieren
+      for (let c = 3; c < 3 + sortedDates.length; c++) {
+        const cell = row.getCell(c);
+        cell.numFmt = '#,##0.0 "h"';
+        cell.alignment = { horizontal: "right", vertical: "middle" };
+      }
+
+      // Gesamtstunden
+      const totalCell = row.getCell(3 + sortedDates.length);
+      totalCell.numFmt = '#,##0.0 "h"';
+      totalCell.font = { bold: true };
+      totalCell.alignment = { horizontal: "right", vertical: "middle" };
+      totalCell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFF0FDFA" }
+      };
+
+      // Buchungen
+      const entriesCell = row.getCell(4 + sortedDates.length);
+      entriesCell.numFmt = '0';
+      entriesCell.alignment = { horizontal: "center", vertical: "middle" };
+
+      row.eachCell(cell => {
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFE2E8F0" } },
+          bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+          left: { style: "thin", color: { argb: "FFE2E8F0" } },
+          right: { style: "thin", color: { argb: "FFE2E8F0" } }
+        };
+      });
+    });
+
+    // Summenzeile im Footer
+    const footValues = ["Gesamtsumme Tag", ""];
+    sortedDates.forEach(d => {
+      footValues.push(d.totalHours);
+    });
+    footValues.push(grandTotalHours);
+    footValues.push(grandTotalEntries);
+
+    const footRow = ws.addRow(footValues);
+    footRow.height = 26;
+    footRow.eachCell((cell, colNum) => {
+      cell.font = { bold: true, color: { argb: "FF0F172A" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFE2E8F0" }
+      };
+      cell.border = {
+        top: { style: "double", color: { argb: "FF475569" } },
+        bottom: { style: "medium", color: { argb: "FF475569" } },
+        left: { style: "thin", color: { argb: "FFCBD5E1" } },
+        right: { style: "thin", color: { argb: "FFCBD5E1" } }
+      };
+
+      if (colNum >= 3 && colNum <= 3 + sortedDates.length) {
+        cell.numFmt = '#,##0.0 "h"';
+        cell.alignment = { horizontal: "right", vertical: "middle" };
+      } else if (colNum === 4 + sortedDates.length) {
+        cell.numFmt = '0';
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      } else {
+        cell.alignment = { horizontal: "left", vertical: "middle" };
+      }
+    });
+
+    // Grand Total hervorheben
+    const grandCell = footRow.getCell(3 + sortedDates.length);
+    grandCell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFCCFBF1" }
+    };
+    grandCell.font = { bold: true, color: { argb: "FF0F766E" }, size: 11 };
+
+    return await wb.xlsx.writeBuffer();
+  }
+
+  if (btnExportTimesheet) {
+    btnExportTimesheet.addEventListener("click", async () => {
+      try {
+        const buf = await generateTimesheetExcel();
+        if (!buf) return;
+        const baseName = (state.targetFileName || "Datei").replace(/\.[^/.]+$/, "");
+        downloadBuffer(buf, `Arbeitszeiten_Uebersicht_${baseName}.xlsx`);
+        showToast("✅ Arbeitszeiten-Matrix erfolgreich als Excel exportiert!");
+      } catch (err) {
+        console.error("Fehler beim Exportieren der Arbeitszeiten:", err);
+        alert("Fehler beim Erstellen der Arbeitszeiten-Excel: " + err.message);
+      }
     });
   }
 
-  function getCategoryBadgeClass(kategorie) {
-    if (!kategorie) return 'badge-unknown';
-    const lower = String(kategorie).trim().toLowerCase();
-    if (lower === 'mitarbeiter') return 'badge-mitarbeiter';
-    if (lower === 'fahrzeug') return 'badge-fahrzeug';
-    if (lower === 'maschine') return 'badge-maschine';
-    return 'badge-unknown';
+  async function generateStaffTemplateExcel() {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Mitarbeiter");
+
+    ws.columns = [
+      { header: "Ressourcennummer", key: "res", width: 20 },
+      { header: "Nachname", key: "nachname", width: 22 },
+      { header: "Vorname", key: "vorname", width: 20 },
+      { header: "Abteilung", key: "abt", width: 24 },
+      { header: "Bemerkung", key: "bem", width: 28 }
+    ];
+
+    const headerRow = ws.getRow(1);
+    headerRow.height = 26;
+    headerRow.eachCell(cell => {
+      cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF0284C7" } // Blue header
+      };
+      cell.alignment = { vertical: "middle", horizontal: "left" };
+      cell.border = {
+        bottom: { style: "medium", color: { argb: "FF0369A1" } }
+      };
+    });
+
+    const sampleData = [
+      ["0045", "Mustermann", "Max", "Montage", "Leitender Monteur"],
+      ["0120", "Schmidt", "Anna", "Kundendienst", "Technikerin"],
+      ["0300", "Weber", "Michael", "Logistik", "Lagerleitung"],
+      ["0400", "Fischer", "Sarah", "Projektleitung", "Bauleiterin"],
+      ["0500", "Becker", "Thomas", "Qualitätssicherung", "Prüftechniker"],
+      ["0600", "Wagner", "Julia", "Service", "Außendienst"],
+      ["0700", "Hoffmann", "Stefan", "Instandhaltung", "Elektroniker"]
+    ];
+
+    sampleData.forEach(rowArr => {
+      const row = ws.addRow(rowArr);
+      row.height = 20;
+      const resCell = row.getCell(1);
+      resCell.numFmt = "0000";
+      resCell.alignment = { horizontal: "center", vertical: "middle" };
+    });
+
+    return await wb.xlsx.writeBuffer();
   }
 
-  function getAbsenceBadgeClass(type) {
-    if (!type) return 'badge-sonstiges';
-    const lower = String(type).trim().toLowerCase();
-    if (lower.includes('abzug') || lower.includes('kürzung') || lower.includes('korrektur')) return 'badge-korrektur';
-    if (lower.includes('arbeit')) return 'badge-arbeit';
-    if (lower.includes('krank')) return 'badge-krank';
-    if (lower.includes('urlaub')) return 'badge-urlaub';
-    if (lower.includes('überstunde') || lower.includes('gleitzeit')) return 'badge-ueberstunden';
-    if (lower.includes('schulung') || lower.includes('lehrgang')) return 'badge-schulung';
-    return 'badge-sonstiges';
+  // ==============================================================================
+  // Gesamte Excel-Datei: Vollständige Tabellenansicht mit Filtern & Live-Editing
+  // ==============================================================================
+
+  function activateTab(tabName) {
+    if (tabName === "fulltable") {
+      if (tabBtnDiagnostics) tabBtnDiagnostics.classList.remove("active");
+      if (tabBtnFulltable) tabBtnFulltable.classList.add("active");
+      if (viewDiagnostics) viewDiagnostics.classList.add("hidden");
+      if (viewFulltable) viewFulltable.classList.remove("hidden");
+      renderFullExcelTable();
+    } else {
+      if (tabBtnFulltable) tabBtnFulltable.classList.remove("active");
+      if (tabBtnDiagnostics) tabBtnDiagnostics.classList.add("active");
+      if (viewFulltable) viewFulltable.classList.add("hidden");
+      if (viewDiagnostics) viewDiagnostics.classList.remove("hidden");
+    }
   }
 
-  function formatAbsenceShort(type, hours) {
-    const hStr = formatNumber(hours, 1).replace(',0', '') + 'h';
-    const lower = String(type).trim().toLowerCase();
-    if (lower.includes('abzug') || lower.includes('kürzung') || lower.includes('korrektur')) return `-${hStr} Korr`;
-    if (lower.includes('arbeit')) return `+${hStr} AZ`;
-    if (lower.includes('krank')) return `+${hStr} K`;
-    if (lower.includes('urlaub')) return `+${hStr} U`;
-    if (lower.includes('überstunde') || lower.includes('gleitzeit')) return `+${hStr} ÜA`;
-    if (lower.includes('schulung')) return `+${hStr} S`;
-    return `+${hStr} ${type}`;
+  if (tabBtnDiagnostics) {
+    tabBtnDiagnostics.addEventListener("click", () => activateTab("diagnostics"));
+  }
+  if (tabBtnFulltable) {
+    tabBtnFulltable.addEventListener("click", () => activateTab("fulltable"));
+  }
+
+  function populateFullTableFilters() {
+    if (!filterFullStaff || !filterFullDate || !state.targetWorkbook || !state.currentTargetSheet) return;
+
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) return;
+
+    const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+    const dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+
+    const staffCounts = new Map();
+    const dateCounts = new Map();
+
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    for (let r = 2; r <= maxRows; r++) {
+      const row = ws.getRow(r);
+      if (!row) continue;
+      let hasData = false;
+      row.eachCell(() => { hasData = true; });
+      if (!hasData) continue;
+
+      // Ressource
+      const cellKeyRes = `${r}_${resColIdx}`;
+      let rawRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
+        ? String(state.appliedCorrections[cellKeyRes]).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+      rawRes = rawRes.replace(/[,.]0+$/, "");
+
+      if (rawRes) {
+        const key = (/^\d+$/.test(rawRes) && rawRes.length < 4) ? WebExcelEngine.padNumber(rawRes, 4) : rawRes;
+        staffCounts.set(key, (staffCounts.get(key) || 0) + 1);
+      }
+
+      // Datum
+      if (dateColIdx) {
+        const cell = row.getCell(dateColIdx);
+        const dObj = parseRowDate(cell.value, cell);
+        if (dObj && dObj.isoKey) {
+          if (!dateCounts.has(dObj.isoKey)) {
+            dateCounts.set(dObj.isoKey, { label: dObj.label || dObj.displayDate, count: 0 });
+          }
+          dateCounts.get(dObj.isoKey).count += 1;
+        }
+      }
+    }
+
+    const curStaffVal = filterFullStaff.value;
+    filterFullStaff.innerHTML = "";
+
+    const hasStaffList = state.staffList && state.staffList.length > 0;
+    const workerKeys = [];
+    const nonWorkerKeys = [];
+
+    Array.from(staffCounts.keys()).sort().forEach(res => {
+      const isKnownWorker = Boolean(getStaffName(res));
+      if (hasStaffList) {
+        if (isKnownWorker) workerKeys.push(res);
+        else nonWorkerKeys.push(res);
+      } else {
+        workerKeys.push(res);
+      }
+    });
+
+    const optAll = document.createElement("option");
+    optAll.value = "all";
+    optAll.textContent = `Alle Ressourcen (${staffCounts.size})`;
+    filterFullStaff.appendChild(optAll);
+
+    if (hasStaffList && nonWorkerKeys.length > 0) {
+      const optAllWorkers = document.createElement("option");
+      optAllWorkers.value = "all_staff";
+      optAllWorkers.textContent = `👷 Nur echte Arbeiter (${workerKeys.length})`;
+      filterFullStaff.appendChild(optAllWorkers);
+
+      const optAllNonWorkers = document.createElement("option");
+      optAllNonWorkers.value = "all_non_staff";
+      optAllNonWorkers.textContent = `⚙️ Nur Fremd-/Maschinen-Ressourcen (${nonWorkerKeys.length})`;
+      filterFullStaff.appendChild(optAllNonWorkers);
+
+      const groupWorkers = document.createElement("optgroup");
+      groupWorkers.label = "👷 Arbeiter (aus Stammdaten)";
+      workerKeys.forEach(res => {
+        const name = getStaffName(res) || `Arbeiter ${res}`;
+        const count = staffCounts.get(res);
+        const opt = document.createElement("option");
+        opt.value = res;
+        opt.textContent = `${name} (Nr. ${res}) [${count} Zeilen]`;
+        if (res === curStaffVal) opt.selected = true;
+        groupWorkers.appendChild(opt);
+      });
+      filterFullStaff.appendChild(groupWorkers);
+
+      const groupNonWorkers = document.createElement("optgroup");
+      groupNonWorkers.label = "⚙️ Sonstige Ressourcen (Maschinen / Fremd)";
+      nonWorkerKeys.forEach(res => {
+        const count = staffCounts.get(res);
+        const opt = document.createElement("option");
+        opt.value = res;
+        opt.textContent = `Ressource ${res} [${count} Zeilen] (Kein Mitarbeiter)`;
+        if (res === curStaffVal) opt.selected = true;
+        groupNonWorkers.appendChild(opt);
+      });
+      filterFullStaff.appendChild(groupNonWorkers);
+    } else {
+      workerKeys.forEach(res => {
+        const name = getStaffName(res) || `Ressource ${res}`;
+        const count = staffCounts.get(res);
+        const opt = document.createElement("option");
+        opt.value = res;
+        opt.textContent = `${name} (Nr. ${res}) [${count} Zeilen]`;
+        if (res === curStaffVal) opt.selected = true;
+        filterFullStaff.appendChild(opt);
+      });
+    }
+
+    if (curStaffVal && (curStaffVal === "all" || curStaffVal === "all_staff" || curStaffVal === "all_non_staff" || staffCounts.has(curStaffVal))) {
+      filterFullStaff.value = curStaffVal;
+    }
+
+    const curDateVal = filterFullDate.value;
+    filterFullDate.innerHTML = `<option value="all">Alle Tage (${dateCounts.size})</option>`;
+    Array.from(dateCounts.keys()).sort().forEach(isoKey => {
+      const dInfo = dateCounts.get(isoKey);
+      const opt = document.createElement("option");
+      opt.value = isoKey;
+      opt.textContent = `${dInfo.label} [${dInfo.count} Zeilen]`;
+      if (isoKey === curDateVal) opt.selected = true;
+      filterFullDate.appendChild(opt);
+    });
+  }
+
+  function renderFullExcelTable() {
+    if (!fulltableThead || !fulltableTbody || !state.targetWorkbook || !state.currentTargetSheet) return;
+
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) return;
+
+    const headerRow = ws.getRow(1);
+    let colCount = ws.columnCount;
+    headerRow.eachCell((cell, colNum) => {
+      if (colNum > colCount) colCount = colNum;
+    });
+
+    // Kopfzeile erstellen
+    let theadHtml = `<tr><th class="col-sticky-row"># Zeile</th>`;
+    for (let c = 1; c <= colCount; c++) {
+      const headerCell = headerRow.getCell(c);
+      const colName = WebExcelEngine.extractCellValue(headerCell.value, headerCell) || `Spalte ${getColLetter(c)}`;
+      theadHtml += `<th><span style="color:var(--text-muted); font-size:0.75rem;">${getColLetter(c)}:</span> ${escapeHtml(colName)}</th>`;
+    }
+    theadHtml += `</tr>`;
+    fulltableThead.innerHTML = theadHtml;
+
+    const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+    const dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+
+    const staffFilter = filterFullStaff ? filterFullStaff.value : "all";
+    const dateFilter = filterFullDate ? filterFullDate.value : "all";
+    const statusFilter = filterFullStatus ? filterFullStatus.value : "all";
+    const searchQuery = filterFullSearch ? filterFullSearch.value.trim().toLowerCase() : "";
+
+    let totalDataRows = 0;
+    let matchingRowsCount = 0;
+    let tbodyHtml = "";
+
+    const resultMap = new Map();
+    if (state.allResults) {
+      state.allResults.forEach(r => {
+        resultMap.set(`${r.row}_${r.col_idx}`, r);
+      });
+    }
+
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    for (let r = 2; r <= maxRows; r++) {
+      const row = ws.getRow(r);
+      if (!row) continue;
+      let hasData = false;
+      row.eachCell(() => { hasData = true; });
+      if (!hasData) continue;
+      totalDataRows++;
+
+      // Mitarbeiter-Filter prüfen
+      const cellKeyRes = `${r}_${resColIdx}`;
+      let rawRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
+        ? String(state.appliedCorrections[cellKeyRes]).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
+      rawRes = rawRes.replace(/[,.]0+$/, "");
+      const paddedRes = (/^\d+$/.test(rawRes) && rawRes.length < 4) ? WebExcelEngine.padNumber(rawRes, 4) : rawRes;
+      const unpaddedRes = rawRes.replace(/^0+/, "");
+      const empName = getStaffName(rawRes);
+      const isKnownWorker = Boolean(empName);
+
+      if (staffFilter === "all_staff") {
+        if (!isKnownWorker) continue;
+      } else if (staffFilter === "all_non_staff") {
+        if (isKnownWorker) continue;
+      } else if (staffFilter !== "all") {
+        const filterName = getStaffName(staffFilter);
+        const matchesStaff = Boolean(empName && filterName && empName === filterName);
+        const matchesKey = (rawRes === staffFilter || paddedRes === staffFilter || unpaddedRes === staffFilter);
+        if (!matchesStaff && !matchesKey) {
+          continue;
+        }
+      }
+
+      // Datums-Filter prüfen
+      let rowDateIso = "";
+      if (dateColIdx) {
+        const cell = row.getCell(dateColIdx);
+        const dObj = parseRowDate(cell.value, cell);
+        rowDateIso = dObj.isoKey;
+      }
+      if (dateFilter !== "all" && rowDateIso !== dateFilter) {
+        continue;
+      }
+
+      // Status- & Such-Prüfung
+      let rowHasError = false;
+      let rowHasCorrection = false;
+      let rowTextAcc = "";
+
+      for (let c = 1; c <= colCount; c++) {
+        const cellKey = `${r}_${c}`;
+        if (state.appliedCorrections && state.appliedCorrections[cellKey] !== undefined) {
+          rowHasCorrection = true;
+        }
+        const errObj = resultMap.get(cellKey);
+        if (errObj && errObj.status !== "OK" && errObj.status !== "OK_LEER") {
+          rowHasError = true;
+        }
+        const val = (state.appliedCorrections && state.appliedCorrections[cellKey] !== undefined)
+          ? String(state.appliedCorrections[cellKey])
+          : WebExcelEngine.extractCellValue(row.getCell(c).value, row.getCell(c));
+        rowTextAcc += " " + String(val).toLowerCase();
+      }
+
+      const empNameForSearch = empName || "";
+      if (empNameForSearch) rowTextAcc += " " + empNameForSearch.toLowerCase();
+
+      if (statusFilter === "errors" && !rowHasError) continue;
+      if (statusFilter === "corrected" && !rowHasCorrection) continue;
+      if (searchQuery && !rowTextAcc.includes(searchQuery)) continue;
+
+      matchingRowsCount++;
+
+      let rowIndicator = "";
+      if (rowHasError) rowIndicator = `<span title="Enthält Prüffehler" style="color:#ef4444; font-size:0.8rem;">⚠️</span>`;
+      else if (rowHasCorrection) rowIndicator = `<span title="Manuell korrigiert" style="color:#10b981; font-size:0.8rem;">✏️</span>`;
+
+      const isJustInserted = (state.lastInsertedRow === r);
+      const rowClass = isJustInserted ? "row-just-inserted" : "";
+      tbodyHtml += `<tr class="${rowClass}">`;
+      tbodyHtml += `<td class="col-sticky-row">
+        <span>${r}</span> ${rowIndicator}
+        <button type="button" class="btn-row-add-below" data-row="${r}" title="Zeile darunter einfügen (Werte als Vorlage übernehmen)">➕</button>
+      </td>`;
+
+      for (let c = 1; c <= colCount; c++) {
+        const cellKey = `${r}_${c}`;
+        const cell = row.getCell(c);
+        const isCorrected = (state.appliedCorrections && state.appliedCorrections[cellKey] !== undefined);
+        const currentVal = isCorrected ? state.appliedCorrections[cellKey] : WebExcelEngine.extractCellValue(cell.value, cell);
+
+        const errObj = resultMap.get(cellKey);
+        const isError = errObj && errObj.status !== "OK" && errObj.status !== "OK_LEER" && !isCorrected;
+
+        let cellClass = "full-cell-editable";
+        let badgeHtml = "";
+
+        if (isCorrected) {
+          cellClass += " cell-corrected";
+          badgeHtml = `<span class="cell-diag-badge badge-corr" title="Manuell korrigiert">✓</span>`;
+        } else if (isError) {
+          cellClass += " cell-error";
+          badgeHtml = `<span class="cell-diag-badge badge-err" title="${escapeHtml(errObj.status_label)}: ${escapeHtml(errObj.detail)}">⚠️</span>`;
+        }
+
+        let displayStr = String(currentVal ?? "");
+        if (typeof currentVal === "number" && !isNaN(currentVal) && !Number.isInteger(currentVal)) {
+          displayStr = currentVal.toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 2 });
+        }
+
+        tbodyHtml += `
+          <td class="${cellClass}" data-row="${r}" data-col="${c}" data-val="${escapeHtml(currentVal ?? '')}" title="Klick zum Ändern (Zelle ${getColLetter(c)}${r})">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px;">
+              <span>${escapeHtml(displayStr)}</span>
+              ${badgeHtml}
+            </div>
+          </td>
+        `;
+      }
+      tbodyHtml += `</tr>`;
+    }
+
+    if (matchingRowsCount === 0) {
+      tbodyHtml = `<tr><td colspan="${colCount + 1}" style="text-align: center; padding: 2rem; color: var(--text-muted);">Keine Zeilen für die aktuellen Filterkriterien gefunden. Klicken Sie auf "Filter zurücksetzen".</td></tr>`;
+    }
+
+    fulltableTbody.innerHTML = tbodyHtml;
+
+    if (fulltableCountsText) {
+      fulltableCountsText.innerHTML = `Zeige <strong>${matchingRowsCount}</strong> von <strong>${totalDataRows}</strong> Zeilen`;
+    }
+    if (tabBadgeTotalRows) {
+      tabBadgeTotalRows.textContent = `${totalDataRows} Zeilen`;
+    }
+
+    // Inline-Editor für alle Tabellenzellen aktivieren
+    fulltableTbody.querySelectorAll(".full-cell-editable").forEach(td => {
+      td.addEventListener("click", () => {
+        makeCellEditable(td);
+      });
+    });
+
+    // Event-Listener für Zeilen-Plus-Buttons
+    fulltableTbody.querySelectorAll(".btn-row-add-below").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const rIdx = parseInt(btn.dataset.row, 10);
+        state.modalCaller = "fulltable";
+        openInsertRowModal(rIdx);
+      });
+    });
+
+    if (state.lastInsertedRow) {
+      const justInsertedTr = fulltableTbody.querySelector(".row-just-inserted");
+      if (justInsertedTr) {
+        setTimeout(() => {
+          justInsertedTr.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 100);
+      }
+      state.lastInsertedRow = null;
+    }
+  }
+
+  function makeCellEditable(td) {
+    if (td.classList.contains("full-cell-editing")) return;
+    const rowIdx = parseInt(td.dataset.row, 10);
+    const colIdx = parseInt(td.dataset.col, 10);
+    const origVal = td.dataset.val ?? "";
+
+    td.classList.add("full-cell-editing");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "cell-inline-input";
+    input.value = origVal;
+    td.innerHTML = "";
+    td.appendChild(input);
+    input.focus();
+    input.select();
+
+    let isSaved = false;
+    function finishEdit() {
+      if (isSaved) return;
+      isSaved = true;
+      const newVal = input.value.trim();
+      if (newVal !== origVal) {
+        saveCellCorrection(rowIdx, colIdx, newVal);
+      } else {
+        renderFullExcelTable();
+      }
+    }
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        finishEdit();
+      } else if (e.key === "Escape") {
+        isSaved = true;
+        renderFullExcelTable();
+      }
+    });
+
+    input.addEventListener("blur", () => {
+      finishEdit();
+    });
+  }
+
+  function saveCellCorrection(rowIdx, colIdx, newVal) {
+    const cellKey = `${rowIdx}_${colIdx}`;
+    state.appliedCorrections[cellKey] = newVal;
+
+    const ws = state.targetWorkbook ? state.targetWorkbook.getWorksheet(state.currentTargetSheet) : null;
+    if (ws) {
+      const cell = ws.getRow(rowIdx).getCell(colIdx);
+      const valStr = String(newVal).trim();
+      if (colIdx === 1) {
+        cell.value = valStr;
+        cell.numFmt = "DD.MM.YYYY";
+      } else if (/^\d+$/.test(valStr) && valStr.startsWith("0") && valStr.length > 1) {
+        cell.value = valStr;
+      } else if (/^\d+$/.test(valStr)) {
+        cell.value = parseInt(valStr, 10);
+      } else if (/^-?\d+\.\d+$/.test(valStr.replace(",", "."))) {
+        cell.value = parseFloat(valStr.replace(",", "."));
+      } else {
+        cell.value = valStr;
+      }
+    }
+
+    const resItem = state.allResults.find(item => item.id === cellKey);
+    if (resItem) {
+      resItem.current_value = newVal;
+      resItem.is_corrected = (newVal !== resItem.original_value);
+    }
+
+    updateFilterCounts(state.allResults);
+    renderResultsTable();
+
+    // Arbeitszeiten-Matrix sofort neu berechnen
+    renderTimesheetMatrix();
+
+    // Gesamttabelle und Filter neu aktualisieren
+    populateFullTableFilters();
+    renderFullExcelTable();
+
+    showToast(`✅ Zelle ${getColLetter(colIdx)}${rowIdx} aktualisiert auf "${newVal}". Arbeitszeiten & Excel synchronisiert!`);
+  }
+
+  function drillDownToFullTable(resource, dateIso) {
+    activateTab("fulltable");
+    if (filterFullStaff && resource) {
+      filterFullStaff.value = resource;
+    }
+    if (filterFullDate && dateIso) {
+      filterFullDate.value = dateIso;
+    } else if (filterFullDate) {
+      filterFullDate.value = "all";
+    }
+    if (filterFullStatus) filterFullStatus.value = "all";
+    if (filterFullSearch) filterFullSearch.value = "";
+
+    renderFullExcelTable();
+
+    const fullTableEl = document.getElementById("view-fulltable");
+    if (fullTableEl) {
+      fullTableEl.scrollIntoView({ behavior: "smooth" });
+    }
+
+    const empName = getStaffName(resource) || `Ressource ${resource}`;
+    showToast(`🔍 Zeige alle Zeilen für ${empName} ${dateIso ? 'am ' + dateIso : ''}. Klicken Sie auf eine Zelle zum Ändern.`);
+  }
+
+  // Filter Event Listener für Gesamttabelle
+  [filterFullStaff, filterFullDate, filterFullStatus].forEach(sel => {
+    if (sel) {
+      sel.addEventListener("change", () => {
+        renderFullExcelTable();
+      });
+    }
+  });
+
+  if (filterFullSearch) {
+    filterFullSearch.addEventListener("input", () => {
+      renderFullExcelTable();
+    });
+  }
+
+  if (btnResetFullFilters) {
+    btnResetFullFilters.addEventListener("click", () => {
+      if (filterFullStaff) filterFullStaff.value = "all";
+      if (filterFullDate) filterFullDate.value = "all";
+      if (filterFullStatus) filterFullStatus.value = "all";
+      if (filterFullSearch) filterFullSearch.value = "";
+      renderFullExcelTable();
+      showToast("Filter zurückgesetzt: Alle Zeilen werden angezeigt.");
+    });
+  }
+
+  // ==============================================================================
+  // Zeile nachtragen (Neu anlegen) ODER Zeile bearbeiten (Live in Prüfdatei)
+  // ==============================================================================
+
+  function formatDateIsoDe(isoStr) {
+    if (!isoStr) return "";
+    const parts = String(isoStr).split("-");
+    if (parts.length === 3) return `${parts[2]}.${parts[1]}.${parts[0]}`;
+    return String(isoStr);
+  }
+
+  function closeInsertRowModal() {
+    if (modalInsertRow) modalInsertRow.classList.add("hidden");
+  }
+
+  function closeChooseBookingModal() {
+    if (modalChooseBooking) modalChooseBooking.classList.add("hidden");
+  }
+
+  // Hilfsfunktion: Ressourcennummer im Dropdown oder als manuelle Nummer sicher einstellen
+  function setResourceFieldValue(resColIdx, resVal) {
+    if (resVal === null || resVal === undefined) return;
+    const clean = String(resVal).replace(/[,.]0+$/, "").trim();
+    const padded = (/^\d+$/.test(clean) && clean.length < 4) ? WebExcelEngine.padNumber(clean, 4) : clean;
+
+    const selectEl = document.getElementById(`modal-field-${resColIdx}`);
+    const customEl = document.getElementById(`modal-field-${resColIdx}-custom`);
+    if (!selectEl) return;
+
+    if (selectEl.tagName === "SELECT") {
+      let matched = false;
+      if (selectEl.options) {
+        for (let opt of selectEl.options) {
+          if (opt.value === clean || opt.value === padded) {
+            selectEl.value = opt.value;
+            matched = true;
+            break;
+          }
+        }
+      }
+      if (matched) {
+        if (customEl) customEl.style.display = "none";
+      } else {
+        selectEl.value = "__custom__";
+        if (customEl) {
+          customEl.style.display = "block";
+          customEl.value = clean;
+        }
+      }
+    } else {
+      selectEl.value = clean;
+    }
+  }
+
+  // Findet alle Zeilen in der Excel-Tabelle für einen bestimmten Mitarbeiter und ein Datum
+  function findRowsForResourceAndDate(resource, dateIso) {
+    if (!state.targetWorkbook || !state.currentTargetSheet) return [];
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) return [];
+
+    let dateColIdx = parseInt(selectTsDateCol?.value, 10);
+    if (isNaN(dateColIdx) || dateColIdx < 1) dateColIdx = 1;
+
+    let resColIdx = parseInt(selectTsResourceCol?.value, 10);
+    if (isNaN(resColIdx) || resColIdx < 1) resColIdx = 3;
+
+    let hoursColIdx = parseInt(selectTsHoursCol?.value, 10);
+    if (isNaN(hoursColIdx) || hoursColIdx < 1) hoursColIdx = null;
+
+    let colCount = 0;
+    const headerRow = ws.getRow(1);
+    headerRow.eachCell((cell, colNum) => {
+      if (colNum > colCount) colCount = colNum;
+    });
+    if (colCount === 0 && ws.columnCount) colCount = ws.columnCount;
+    if (colCount === 0 && ws.actualColumnCount) colCount = ws.actualColumnCount;
+    if (colCount === 0) colCount = 10;
+
+    const cleanRes = String(resource || "").replace(/[,.]0+$/, "").trim();
+    const cleanNum = /^\d+$/.test(cleanRes) ? parseInt(cleanRes, 10) : null;
+
+    const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+    const matches = [];
+
+    for (let r = 2; r <= maxRows; r++) {
+      const row = ws.getRow(r);
+      if (!row) continue;
+      let hasData = false;
+      row.eachCell(() => { hasData = true; });
+      if (!hasData) continue;
+
+      // 1. Ressource prüfen
+      const cellKeyRes = `${r}_${resColIdx}`;
+      let rRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
+        ? String(state.appliedCorrections[cellKeyRes]).trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
+      rRes = rRes.replace(/[,.]0+$/, "").trim();
+
+      let resMatches = (rRes === cleanRes);
+      if (!resMatches && cleanNum !== null && /^\d+$/.test(rRes)) {
+        resMatches = (parseInt(rRes, 10) === cleanNum);
+      }
+      if (!resMatches) continue;
+
+      // 2. Datum prüfen
+      let rDateIso = "";
+      let rDateDisp = "";
+      if (dateColIdx) {
+        const cell = row.getCell(dateColIdx);
+        const cellKeyDate = `${r}_${dateColIdx}`;
+        const corrVal = state.appliedCorrections ? state.appliedCorrections[cellKeyDate] : undefined;
+        if (corrVal !== undefined) {
+          const pd = WebExcelEngine.parseDateValue(corrVal);
+          if (pd) {
+            rDateIso = pd.toISOString().split("T")[0];
+            rDateDisp = WebExcelEngine.formatDate(pd);
+          } else {
+            rDateIso = String(corrVal);
+            rDateDisp = String(corrVal);
+          }
+        } else {
+          const dObj = parseRowDate(cell.value, cell);
+          if (dObj) {
+            rDateIso = dObj.isoKey;
+            rDateDisp = dObj.displayDate;
+          }
+        }
+      }
+
+      if (dateIso && rDateIso !== dateIso) continue;
+
+      // 3. Stunden
+      let rHours = 0;
+      if (hoursColIdx) {
+        const cellKeyHours = `${r}_${hoursColIdx}`;
+        const hVal = (state.appliedCorrections && state.appliedCorrections[cellKeyHours] !== undefined)
+          ? state.appliedCorrections[cellKeyHours]
+          : row.getCell(hoursColIdx).value;
+        rHours = parseHours(hVal);
+      } else {
+        rHours = 1;
+      }
+
+      // 4. Weitere Infos (z. B. Auftrag, Tätigkeit)
+      let infoParts = [];
+      for (let c = 1; c <= colCount; c++) {
+        if (c !== dateColIdx && c !== resColIdx && c !== hoursColIdx) {
+          const cell = row.getCell(c);
+          const cellKeyOther = `${r}_${c}`;
+          const val = (state.appliedCorrections && state.appliedCorrections[cellKeyOther] !== undefined)
+            ? String(state.appliedCorrections[cellKeyOther]).trim()
+            : WebExcelEngine.extractCellValue(cell.value, cell).trim();
+          if (val) {
+            const hCell = headerRow.getCell(c);
+            const hName = WebExcelEngine.extractCellValue(hCell.value, hCell) || `Spalte ${getColLetter(c)}`;
+            infoParts.push(`${hName}: ${val}`);
+            if (infoParts.length >= 2) break;
+          }
+        }
+      }
+
+      matches.push({
+        rowIdx: r,
+        resource: rRes,
+        dateIso: rDateIso,
+        dateDisp: rDateDisp || dateIso,
+        hours: rHours,
+        info: infoParts.join(" • ")
+      });
+    }
+
+    return matches;
+  }
+
+  // Öffnet den Auswahldialog, wenn für einen Tag mehrere Buchungen existieren
+  function openChooseBookingModal(resource, dateIso, matches) {
+    if (!modalChooseBooking || !chooseBookingList) return;
+
+    const empName = getStaffName(resource) || `Ressource ${resource}`;
+    const dDisp = (matches[0] && matches[0].dateDisp) ? matches[0].dateDisp : (dateIso ? formatDateIsoDe(dateIso) : "");
+
+    if (chooseBookingTitle) {
+      chooseBookingTitle.textContent = `Buchungen: ${empName}`;
+    }
+    if (chooseBookingSubtitle) {
+      chooseBookingSubtitle.textContent = `Am ${dDisp} liegen ${matches.length} Buchungen vor:`;
+    }
+
+    let html = "";
+    matches.forEach(m => {
+      html += `
+        <div class="choose-booking-item" style="display: flex; justify-content: space-between; align-items: center; background: #f8fafc; border: 1px solid var(--border); border-radius: 6px; padding: 0.65rem 0.85rem; gap: 0.75rem;">
+          <div>
+            <div style="font-weight: 600; color: #0f172a; font-size: 0.92rem;">
+              Zeile ${m.rowIdx}: <span style="color: #0369a1;">${formatHoursDe(m.hours)} Stunden</span>
+            </div>
+            ${m.info ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 3px;">${escapeHtml(m.info)}</div>` : ''}
+          </div>
+          <button type="button" class="btn btn-primary btn-sm btn-edit-specific-row" data-row="${m.rowIdx}" style="padding: 4px 12px; font-size: 0.82rem; white-space: nowrap;">
+            ✏️ Bearbeiten
+          </button>
+        </div>
+      `;
+    });
+    chooseBookingList.innerHTML = html;
+
+    chooseBookingList.querySelectorAll(".btn-edit-specific-row").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const rIdx = parseInt(btn.dataset.row, 10);
+        state.modalCaller = "timesheet";
+        closeChooseBookingModal();
+        openEditRowModal(rIdx);
+      });
+    });
+
+    if (btnChooseAddNew) {
+      btnChooseAddNew.onclick = () => {
+        state.modalCaller = "timesheet";
+        closeChooseBookingModal();
+        openInsertRowModal(null, { res: resource, dateIso: dateIso });
+      };
+    }
+
+    modalChooseBooking.classList.remove("hidden");
+  }
+
+  // Generiert die dynamischen Input-Felder im Modal für jede Spalte
+  function renderModalFields(tgtHeaders, dateColIdx, resColIdx, hoursColIdx) {
+    if (!insertFieldsGrid) return;
+    let fieldsHtml = "";
+
+    tgtHeaders.forEach(h => {
+      const c = h.colNum;
+      const isDate = (c === dateColIdx);
+      const isRes = (c === resColIdx && c !== dateColIdx);
+      const isHours = (c === hoursColIdx && c !== dateColIdx && c !== resColIdx);
+
+      fieldsHtml += `<div class="field-item">`;
+      fieldsHtml += `<label for="modal-field-${c}"><span>${escapeHtml(h.name)}</span> <span class="field-col-tag">Spalte ${h.letter}</span></label>`;
+
+      if (isDate) {
+        fieldsHtml += `
+          <div style="display: flex; gap: 0.35rem; align-items: center;">
+            <input type="date" class="form-input form-input-sm insert-field-val" data-col="${c}" id="modal-field-${c}" style="flex: 1;">
+            <button type="button" class="btn btn-secondary btn-sm btn-quick-today" style="padding: 2px 7px; font-size: 0.75rem;" title="Heutiges Datum setzen">Heute</button>
+          </div>
+        `;
+      } else if (isRes) {
+        let staffOpts = `<option value="">-- Bitte wählen --</option>`;
+        if (state.staffList && state.staffList.length > 0) {
+          state.staffList.forEach(s => {
+            staffOpts += `<option value="${escapeHtml(s.resource)}">${escapeHtml(s.resource)} - ${escapeHtml(s.name)}</option>`;
+          });
+        }
+        staffOpts += `<option value="__custom__">✏️ Andere Nummer manuell eingeben...</option>`;
+
+        fieldsHtml += `
+          <div>
+            <select class="form-select form-select-sm insert-field-val" data-col="${c}" id="modal-field-${c}">
+              ${staffOpts}
+            </select>
+            <input type="text" class="form-input form-input-sm insert-custom-res" id="modal-field-${c}-custom" placeholder="Nummer eingeben..." style="display: none; margin-top: 4px;">
+          </div>
+        `;
+      } else if (isHours) {
+        fieldsHtml += `
+          <input type="number" step="0.25" min="0" max="24" class="form-input form-input-sm insert-field-val" data-col="${c}" id="modal-field-${c}" placeholder="z. B. 8.0">
+        `;
+      } else {
+        fieldsHtml += `
+          <input type="text" class="form-input form-input-sm insert-field-val" data-col="${c}" id="modal-field-${c}">
+        `;
+      }
+      fieldsHtml += `</div>`;
+    });
+    insertFieldsGrid.innerHTML = fieldsHtml;
+
+    // Event listener für Quick "Heute" Button
+    insertFieldsGrid.querySelectorAll(".btn-quick-today").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const inp = btn.previousElementSibling;
+        if (inp && inp.type === "date") {
+          const now = new Date();
+          inp.value = now.toISOString().split("T")[0];
+        }
+      });
+    });
+
+    // Event listener für Manuelle Nummer bei Mitarbeiter
+    const resSelect = document.getElementById(`modal-field-${resColIdx}`);
+    const resCustom = document.getElementById(`modal-field-${resColIdx}-custom`);
+    if (resSelect && resCustom) {
+      resSelect.addEventListener("change", () => {
+        if (resSelect.value === "__custom__") {
+          resCustom.style.display = "block";
+          resCustom.focus();
+        } else {
+          resCustom.style.display = "none";
+        }
+      });
+    }
+  }
+
+  // Füllt die Formularfelder mit den Werten einer bestimmten Zeile
+  function applyRowValuesToFields(rowIdx, tgtHeaders, dateColIdx, resColIdx, hoursColIdx) {
+    if (!rowIdx || !state.targetWorkbook || !state.currentTargetSheet) return;
+    const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+    if (!ws) return;
+    const tRow = ws.getRow(rowIdx);
+    if (!tRow) return;
+
+    tgtHeaders.forEach(h => {
+      const c = h.colNum;
+      const inputEl = document.getElementById(`modal-field-${c}`);
+      if (!inputEl) return;
+
+      const cell = tRow.getCell(c);
+      const cellKey = `${rowIdx}_${c}`;
+      const corrVal = state.appliedCorrections ? state.appliedCorrections[cellKey] : undefined;
+
+      if (c === dateColIdx) {
+        if (corrVal !== undefined) {
+          const pd = WebExcelEngine.parseDateValue(corrVal);
+          if (pd) inputEl.value = pd.toISOString().split("T")[0];
+          else inputEl.value = String(corrVal);
+        } else {
+          const dObj = parseRowDate(cell.value, cell);
+          if (dObj && dObj.isoKey && dObj.isoKey !== "ohne_datum") {
+            inputEl.value = dObj.isoKey;
+          } else {
+            const raw = WebExcelEngine.extractCellValue(cell.value, cell);
+            const pd = WebExcelEngine.parseDateValue(raw);
+            if (pd) inputEl.value = pd.toISOString().split("T")[0];
+            else inputEl.value = "";
+          }
+        }
+      } else if (c === resColIdx) {
+        const raw = (corrVal !== undefined)
+          ? String(corrVal).trim()
+          : WebExcelEngine.extractCellValue(cell.value, cell).replace(/[,.]0+$/, "").trim();
+        setResourceFieldValue(c, raw);
+      } else {
+        const val = (corrVal !== undefined)
+          ? corrVal
+          : WebExcelEngine.extractCellValue(cell.value, cell);
+        inputEl.value = (val !== null && val !== undefined) ? String(val) : "";
+      }
+    });
+  }
+
+  // Öffnet das Modal im BEARBEITEN-Modus für eine bestehende Zeile
+  function openEditRowModal(rowIdx) {
+    try {
+      if (!state.targetWorkbook || !state.currentTargetSheet) {
+        alert("Bitte laden Sie zuerst eine zu prüfende Excel-Datei.");
+        return;
+      }
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (!ws) {
+        alert("Das ausgewählte Arbeitsblatt konnte nicht gefunden werden.");
+        return;
+      }
+
+      const row = ws.getRow(rowIdx);
+      if (!row) {
+        alert(`Die Zeile ${rowIdx} existiert nicht.`);
+        return;
+      }
+
+      state.modalRowMode = "edit";
+      state.modalEditRowIdx = rowIdx;
+
+      let colCount = 0;
+      const headerRow = ws.getRow(1);
+      headerRow.eachCell((cell, colNum) => {
+        if (colNum > colCount) colCount = colNum;
+      });
+      if (colCount === 0 && ws.columnCount) colCount = ws.columnCount;
+      if (colCount === 0 && ws.actualColumnCount) colCount = ws.actualColumnCount;
+      if (colCount === 0) colCount = 10;
+
+      const tgtHeaders = [];
+      for (let c = 1; c <= colCount; c++) {
+        const headerCell = headerRow.getCell(c);
+        const colName = WebExcelEngine.extractCellValue(headerCell.value, headerCell) || `Spalte ${getColLetter(c)}`;
+        tgtHeaders.push({
+          colNum: c,
+          letter: getColLetter(c),
+          name: colName
+        });
+      }
+
+      let dateColIdx = parseInt(selectTsDateCol?.value, 10);
+      if (isNaN(dateColIdx) || dateColIdx < 1) {
+        const foundDate = tgtHeaders.find(h => /datum|date|tag|zeitpunkt|buchung/i.test(h.name));
+        dateColIdx = foundDate ? foundDate.colNum : 1;
+      }
+
+      let resColIdx = parseInt(selectTsResourceCol?.value, 10);
+      if (isNaN(resColIdx) || resColIdx < 1) {
+        const foundRes = tgtHeaders.find(h => /ressource|mitarbeiter|pers|ma|worker/i.test(h.name));
+        resColIdx = foundRes ? foundRes.colNum : (colCount >= 3 ? 3 : 1);
+      }
+
+      let hoursColIdx = parseInt(selectTsHoursCol?.value, 10);
+      if (isNaN(hoursColIdx) || hoursColIdx < 1) {
+        const foundHours = tgtHeaders.find(h => /stunde|dauer|zeit|menge|std|^h$/i.test(h.name));
+        hoursColIdx = foundHours ? foundHours.colNum : null;
+      }
+
+      // UI auf Edit-Modus anpassen
+      if (modalIcon) modalIcon.textContent = "✏️";
+      if (modalInsertOnlySections) modalInsertOnlySections.classList.add("hidden");
+      if (modalEditBanner) modalEditBanner.classList.remove("hidden");
+
+      const cellKeyRes = `${rowIdx}_${resColIdx}`;
+      const curRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
+        ? String(state.appliedCorrections[cellKeyRes]).trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
+      const empName = getStaffName(curRes) || `Ressource ${curRes}`;
+
+      const cellKeyDate = `${rowIdx}_${dateColIdx}`;
+      let curDateIso = "";
+      let curDateDisp = "";
+      const corrDate = state.appliedCorrections ? state.appliedCorrections[cellKeyDate] : undefined;
+      if (corrDate !== undefined) {
+        const pd = WebExcelEngine.parseDateValue(corrDate);
+        if (pd) {
+          curDateIso = pd.toISOString().split("T")[0];
+          curDateDisp = WebExcelEngine.formatDate(pd);
+        } else {
+          curDateIso = String(corrDate);
+          curDateDisp = String(corrDate);
+        }
+      } else {
+        const dObj = parseRowDate(row.getCell(dateColIdx).value, row.getCell(dateColIdx));
+        if (dObj) {
+          curDateIso = dObj.isoKey;
+          curDateDisp = dObj.displayDate;
+        }
+      }
+
+      if (modalTitle) modalTitle.textContent = `Zeile ${rowIdx} bearbeiten: ${empName}`;
+      if (modalDesc) modalDesc.textContent = `Ändern Sie die Werte dieser Zeile (${curDateDisp || 'Datum unbestimmt'}). Die Daten werden direkt in Excel übernommen.`;
+      if (modalEditRowNum) modalEditRowNum.textContent = `Zeile ${rowIdx} (${empName})`;
+      if (modalFieldsTitle) modalFieldsTitle.textContent = `Werte für Zeile ${rowIdx} anpassen`;
+      if (btnConfirmIcon) btnConfirmIcon.textContent = "💾";
+      if (btnConfirmInsertText) btnConfirmInsertText.textContent = `Änderungen für Zeile ${rowIdx} speichern`;
+
+      if (btnSwitchToInsert) {
+        btnSwitchToInsert.onclick = () => {
+          state.modalCaller = "timesheet";
+          openInsertRowModal(null, { res: curRes, dateIso: curDateIso });
+        };
+      }
+
+      // Felder rendern & Werte belegen
+      renderModalFields(tgtHeaders, dateColIdx, resColIdx, hoursColIdx);
+      applyRowValuesToFields(rowIdx, tgtHeaders, dateColIdx, resColIdx, hoursColIdx);
+
+      if (modalInsertRow) modalInsertRow.classList.remove("hidden");
+
+      setTimeout(() => {
+        if (hoursColIdx) {
+          const hInput = document.getElementById(`modal-field-${hoursColIdx}`);
+          if (hInput) {
+            hInput.focus();
+            hInput.select();
+            return;
+          }
+        }
+        const firstInput = insertFieldsGrid ? insertFieldsGrid.querySelector("input, select") : null;
+        if (firstInput) firstInput.focus();
+      }, 50);
+
+    } catch (err) {
+      console.error("Fehler beim Öffnen des Bearbeiten-Dialogs:", err);
+      alert("Fehler beim Öffnen des Bearbeiten-Dialogs: " + err.message);
+    }
+  }
+
+  // Öffnet das Modal im NEU-ANLEGEN-Modus (Zeile nachtragen)
+  function openInsertRowModal(sourceRowIdx = null, prefill = null) {
+    try {
+      if (!state.targetWorkbook || !state.currentTargetSheet) {
+        alert("Bitte laden Sie zuerst eine zu prüfende Excel-Datei.");
+        return;
+      }
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (!ws) {
+        alert("Das ausgewählte Arbeitsblatt konnte nicht gefunden werden.");
+        return;
+      }
+
+      state.modalRowMode = "insert";
+      state.modalEditRowIdx = null;
+
+      let colCount = 0;
+      const headerRow = ws.getRow(1);
+      headerRow.eachCell((cell, colNum) => {
+        if (colNum > colCount) colCount = colNum;
+      });
+      if (colCount === 0 && ws.columnCount) colCount = ws.columnCount;
+      if (colCount === 0 && ws.actualColumnCount) colCount = ws.actualColumnCount;
+      if (colCount === 0) colCount = 10;
+
+      const tgtHeaders = [];
+      for (let c = 1; c <= colCount; c++) {
+        const headerCell = headerRow.getCell(c);
+        const colName = WebExcelEngine.extractCellValue(headerCell.value, headerCell) || `Spalte ${getColLetter(c)}`;
+        tgtHeaders.push({
+          colNum: c,
+          letter: getColLetter(c),
+          name: colName
+        });
+      }
+
+      let dateColIdx = parseInt(selectTsDateCol?.value, 10);
+      if (isNaN(dateColIdx) || dateColIdx < 1) {
+        const foundDate = tgtHeaders.find(h => /datum|date|tag|zeitpunkt|buchung/i.test(h.name));
+        dateColIdx = foundDate ? foundDate.colNum : 1;
+      }
+
+      let resColIdx = parseInt(selectTsResourceCol?.value, 10);
+      if (isNaN(resColIdx) || resColIdx < 1) {
+        const foundRes = tgtHeaders.find(h => /ressource|mitarbeiter|pers|ma|worker/i.test(h.name));
+        resColIdx = foundRes ? foundRes.colNum : (colCount >= 3 ? 3 : 1);
+      }
+
+      let hoursColIdx = parseInt(selectTsHoursCol?.value, 10);
+      if (isNaN(hoursColIdx) || hoursColIdx < 1) {
+        const foundHours = tgtHeaders.find(h => /stunde|dauer|zeit|menge|std|^h$/i.test(h.name));
+        hoursColIdx = foundHours ? foundHours.colNum : null;
+      }
+
+      // UI auf Insert-Modus setzen
+      if (modalIcon) modalIcon.textContent = "➕";
+      if (modalInsertOnlySections) modalInsertOnlySections.classList.remove("hidden");
+      if (modalEditBanner) modalEditBanner.classList.add("hidden");
+      if (modalFieldsTitle) modalFieldsTitle.textContent = "Werte der neuen Zeile eingeben";
+      if (btnConfirmIcon) btnConfirmIcon.textContent = "➕";
+      if (btnConfirmInsertText) btnConfirmInsertText.textContent = "Zeile jetzt einfügen";
+
+      // Titel dynamisch anpassen
+      if (prefill && prefill.res) {
+        const empName = getStaffName(prefill.res) || `Ressource ${prefill.res}`;
+        const dDisp = prefill.dateIso ? formatDateIsoDe(prefill.dateIso) : "";
+        if (modalTitle) modalTitle.textContent = `Zeile nachtragen für ${empName}${dDisp ? ' am ' + dDisp : ''}`;
+        if (modalDesc) modalDesc.textContent = `Fügt eine neue Zeile für ${empName} mit korrekter Formatierung an die richtige Stelle der Datei ein.`;
+      } else {
+        if (modalTitle) modalTitle.textContent = "Zeile in Prüfdatei nachtragen";
+        if (modalDesc) modalDesc.textContent = "Fügt eine fehlende Zeile mit korrekter Formatierung an die richtige Stelle der Datei ein.";
+      }
+
+      // 1. Dropdowns für Zeilenauswahl & Vorlage aufbauen
+      const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+      const rowOptions = [];
+
+      for (let r = 2; r <= maxRows; r++) {
+        const row = ws.getRow(r);
+        if (!row) continue;
+        let hasData = false;
+        row.eachCell(() => { hasData = true; });
+        if (!hasData) continue;
+
+        let dateDisp = "";
+        if (dateColIdx) {
+          const cell = row.getCell(dateColIdx);
+          const dObj = parseRowDate(cell.value, cell);
+          dateDisp = dObj ? dObj.displayDate : WebExcelEngine.extractCellValue(cell.value, cell);
+        }
+        let resVal = WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/[,.]0+$/, "").trim();
+        const staffName = getStaffName(resVal);
+        const resDisp = staffName ? `${resVal} (${staffName})` : (resVal ? `Nr. ${resVal}` : "—");
+
+        let otherColVal = "";
+        for (let c = 1; c <= colCount; c++) {
+          if (c !== dateColIdx && c !== resColIdx && c !== hoursColIdx) {
+            const v = WebExcelEngine.extractCellValue(row.getCell(c).value, row.getCell(c)).trim();
+            if (v) {
+              otherColVal = v;
+              break;
+            }
+          }
+        }
+
+        const label = `Zeile ${r}: ${dateDisp ? '[' + dateDisp + '] ' : ''}MA: ${resDisp}${otherColVal ? ' | ' + otherColVal : ''}`;
+        rowOptions.push({ rowIdx: r, label: label });
+      }
+
+      if (insertTargetRowSelect) {
+        insertTargetRowSelect.innerHTML = rowOptions.map(opt => `<option value="${opt.rowIdx}">${escapeHtml(opt.label)}</option>`).join("");
+        if (sourceRowIdx && rowOptions.some(o => o.rowIdx === sourceRowIdx)) {
+          insertTargetRowSelect.value = sourceRowIdx;
+        } else if (rowOptions.length > 0) {
+          insertTargetRowSelect.value = rowOptions[rowOptions.length - 1].rowIdx;
+        }
+      }
+
+      if (insertTemplateRowSelect) {
+        insertTemplateRowSelect.innerHTML = `<option value="">-- Keine Vorlage (neu ausfüllen) --</option>` +
+          rowOptions.map(opt => `<option value="${opt.rowIdx}">${escapeHtml(opt.label)}</option>`).join("");
+        if (sourceRowIdx && rowOptions.some(o => o.rowIdx === sourceRowIdx)) {
+          insertTemplateRowSelect.value = sourceRowIdx;
+        } else {
+          insertTemplateRowSelect.value = "";
+        }
+      }
+
+      // 2. Eingabefelder dynamisch rendern
+      renderModalFields(tgtHeaders, dateColIdx, resColIdx, hoursColIdx);
+
+      if (insertTemplateRowSelect) {
+        insertTemplateRowSelect.onchange = (e) => {
+          const selVal = parseInt(e.target.value, 10);
+          if (selVal) applyRowValuesToFields(selVal, tgtHeaders, dateColIdx, resColIdx, hoursColIdx);
+        };
+      }
+
+      // 3. Modus & Initialwerte setzen
+      const radioAuto = document.querySelector('input[name="insert-pos-mode"][value="auto"]');
+      const radioAfter = document.querySelector('input[name="insert-pos-mode"][value="after_row"]');
+
+      if (sourceRowIdx) {
+        if (radioAfter) radioAfter.checked = true;
+        if (insertAfterRowContainer) insertAfterRowContainer.classList.remove("hidden");
+        if (insertAutoHint) insertAutoHint.classList.add("hidden");
+        applyRowValuesToFields(sourceRowIdx, tgtHeaders, dateColIdx, resColIdx, hoursColIdx);
+      } else {
+        if (radioAuto) radioAuto.checked = true;
+        if (insertAfterRowContainer) insertAfterRowContainer.classList.add("hidden");
+        if (insertAutoHint) insertAutoHint.classList.remove("hidden");
+
+        if (prefill) {
+          if (prefill.dateIso) {
+            const dateInput = document.getElementById(`modal-field-${dateColIdx}`);
+            if (dateInput) dateInput.value = prefill.dateIso;
+          }
+          if (prefill.res) {
+            setResourceFieldValue(resColIdx, prefill.res);
+          }
+          if (prefill.hours !== undefined && hoursColIdx) {
+            const hInput = document.getElementById(`modal-field-${hoursColIdx}`);
+            if (hInput) hInput.value = prefill.hours;
+          }
+        } else {
+          if (filterFullDate && filterFullDate.value && filterFullDate.value !== "all") {
+            const dateInput = document.getElementById(`modal-field-${dateColIdx}`);
+            if (dateInput) dateInput.value = filterFullDate.value;
+          }
+          if (filterFullStaff && filterFullStaff.value && filterFullStaff.value !== "all" && filterFullStaff.value !== "all_staff" && filterFullStaff.value !== "all_non_staff") {
+            setResourceFieldValue(resColIdx, filterFullStaff.value);
+          }
+        }
+      }
+
+      if (modalInsertRow) modalInsertRow.classList.remove("hidden");
+
+      setTimeout(() => {
+        if (prefill && prefill.res && prefill.dateIso && hoursColIdx) {
+          const hInput = document.getElementById(`modal-field-${hoursColIdx}`);
+          if (hInput) {
+            hInput.focus();
+            return;
+          }
+        }
+        const firstInp = insertFieldsGrid ? insertFieldsGrid.querySelector("input, select") : null;
+        if (firstInp) firstInp.focus();
+      }, 50);
+
+    } catch (err) {
+      console.error("Fehler beim Öffnen des Zeile-nachtragen-Dialogs:", err);
+      alert("Fehler beim Öffnen des Zeile-nachtragen-Dialogs: " + err.message);
+    }
+  }
+
+  // Speichert die Änderungen einer bearbeiteten Zeile direkt in die Prüfdatei
+  function executeSaveEditedRow(rowIdx) {
+    try {
+      if (!state.targetWorkbook || !state.currentTargetSheet) return;
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (!ws) return;
+
+      const row = ws.getRow(rowIdx);
+      if (!row) return;
+
+      let dateColIdx = parseInt(selectTsDateCol?.value, 10);
+      if (isNaN(dateColIdx) || dateColIdx < 1) dateColIdx = 1;
+
+      let resColIdx = parseInt(selectTsResourceCol?.value, 10);
+      if (isNaN(resColIdx) || resColIdx < 1) resColIdx = 3;
+
+      let hoursColIdx = parseInt(selectTsHoursCol?.value, 10);
+      if (isNaN(hoursColIdx) || hoursColIdx < 1) hoursColIdx = null;
+
+      let colCount = 0;
+      const headerRow = ws.getRow(1);
+      headerRow.eachCell((cell, colNum) => {
+        if (colNum > colCount) colCount = colNum;
+      });
+      if (colCount === 0 && ws.columnCount) colCount = ws.columnCount;
+      if (colCount === 0 && ws.actualColumnCount) colCount = ws.actualColumnCount;
+      if (colCount === 0) colCount = 10;
+
+      let savedRes = "";
+
+      for (let c = 1; c <= colCount; c++) {
+        const inputEl = document.getElementById(`modal-field-${c}`);
+        let val = inputEl ? inputEl.value.trim() : "";
+
+        if (c === resColIdx && val === "__custom__") {
+          const customEl = document.getElementById(`modal-field-${c}-custom`);
+          val = customEl ? customEl.value.trim() : "";
+        }
+
+        const cell = row.getCell(c);
+        const cellKey = `${rowIdx}_${c}`;
+
+        if (c === dateColIdx) {
+          if (val) {
+            const parts = val.split("-");
+            let dispDate = val;
+            if (parts.length === 3) {
+              dispDate = `${parts[2]}.${parts[1]}.${parts[0]}`;
+            }
+            cell.value = dispDate;
+            cell.numFmt = "DD.MM.YYYY";
+            cell.alignment = { horizontal: "center", vertical: "middle" };
+            state.appliedCorrections[cellKey] = dispDate;
+          } else {
+            cell.value = "";
+            state.appliedCorrections[cellKey] = "";
+          }
+        } else if (c === resColIdx) {
+          let cleanRes = val.replace(/[,.]0+$/, "").trim();
+          if (/^\d{1,4}$/.test(cleanRes)) {
+            cleanRes = WebExcelEngine.padNumber(cleanRes, 4);
+            cell.numFmt = "0000";
+          }
+          cell.value = cleanRes;
+          cell.alignment = { horizontal: "center", vertical: "middle" };
+          state.appliedCorrections[cellKey] = cleanRes;
+          savedRes = cleanRes;
+        } else if (c === hoursColIdx) {
+          if (val !== "") {
+            const num = parseFloat(val.replace(",", "."));
+            if (!isNaN(num)) {
+              cell.value = num;
+              cell.numFmt = "#,##0.0";
+              cell.alignment = { horizontal: "right", vertical: "middle" };
+              state.appliedCorrections[cellKey] = num;
+            } else {
+              cell.value = val;
+              state.appliedCorrections[cellKey] = val;
+            }
+          } else {
+            cell.value = null;
+            state.appliedCorrections[cellKey] = "";
+          }
+        } else {
+          if (/^\d+$/.test(val) && val.length < 10 && !val.startsWith("0")) {
+            cell.value = parseInt(val, 10);
+          } else {
+            cell.value = val;
+          }
+          state.appliedCorrections[cellKey] = val;
+        }
+      }
+
+      closeInsertRowModal();
+
+      // Mitarbeiter für sanftes Hervorheben in der Wochentabelle merken
+      if (savedRes) state.highlightEmployeeRes = savedRes;
+
+      // UI & Analyse aktualisieren (OHNE Scrollen nach oben und ohne Toast-Überschreibung!)
+      runInspection({ skipScroll: true, skipToast: true });
+
+      showToast(`✅ Änderungen für Zeile ${rowIdx} erfolgreich in Prüfdatei gespeichert!`);
+
+      // Wenn aus der Wochentabelle aufgerufen: Wochentabelle direkt wieder im Blick behalten
+      if (state.modalCaller === "timesheet") {
+        setTimeout(() => {
+          const tsSec = document.getElementById("timesheet-section");
+          if (tsSec) {
+            tsSec.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }, 50);
+      }
+    } catch (err) {
+      console.error("Fehler beim Speichern der bearbeiteten Zeile:", err);
+      alert("Fehler beim Speichern der Zeile: " + err.message);
+    }
+  }
+
+  // Fügt eine neue Zeile an die gewünschte Position ein
+  function executeInsertRow() {
+    try {
+      if (!state.targetWorkbook || !state.currentTargetSheet) return;
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (!ws) return;
+
+      let colCount = 0;
+      const headerRow = ws.getRow(1);
+      headerRow.eachCell((cell, colNum) => {
+        if (colNum > colCount) colCount = colNum;
+      });
+      if (colCount === 0 && ws.columnCount) colCount = ws.columnCount;
+      if (colCount === 0 && ws.actualColumnCount) colCount = ws.actualColumnCount;
+      if (colCount === 0) colCount = 10;
+
+      let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+      let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+      let hoursColIdx = parseInt(selectTsHoursCol?.value, 10) || null;
+
+      // 1. Spaltenwerte einsammeln
+      const rowValues = [];
+      let enteredDateIso = "";
+      let enteredRes = "";
+
+      for (let c = 1; c <= colCount; c++) {
+        const inputEl = document.getElementById(`modal-field-${c}`);
+        let val = inputEl ? inputEl.value.trim() : "";
+
+        if (c === resColIdx && val === "__custom__") {
+          const customEl = document.getElementById(`modal-field-${c}-custom`);
+          val = customEl ? customEl.value.trim() : "";
+        }
+
+        if (c === dateColIdx) {
+          if (val) {
+            enteredDateIso = val;
+            const parts = val.split("-");
+            if (parts.length === 3) {
+              val = `${parts[2]}.${parts[1]}.${parts[0]}`;
+            }
+          }
+        } else if (c === resColIdx) {
+          enteredRes = val.replace(/[,.]0+$/, "").trim();
+          if (/^\d{1,4}$/.test(enteredRes)) {
+            val = WebExcelEngine.padNumber(enteredRes, 4);
+          }
+        } else if (c === hoursColIdx && val) {
+          const parsedH = parseFloat(val.replace(",", "."));
+          if (!isNaN(parsedH)) val = parsedH;
+        }
+
+        rowValues.push(val !== "" ? val : null);
+      }
+
+      // 2. Zielposition ermitteln
+      const mode = document.querySelector('input[name="insert-pos-mode"]:checked')?.value || "auto";
+      const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
+      let insertAtRowIndex = maxRows + 1;
+
+      if (mode === "end") {
+        insertAtRowIndex = maxRows + 1;
+      } else if (mode === "after_row") {
+        const selectedRow = parseInt(insertTargetRowSelect?.value, 10);
+        if (selectedRow && selectedRow >= 1 && selectedRow <= maxRows) {
+          insertAtRowIndex = selectedRow + 1;
+        } else {
+          insertAtRowIndex = maxRows + 1;
+        }
+      } else {
+        // Auto-Modus: Chronologisch nach Datum & Mitarbeiter
+        let foundDateMatchLast = null;
+        let foundStaffAndDateMatchLast = null;
+        let foundFirstLaterDate = null;
+
+        for (let r = 2; r <= maxRows; r++) {
+          const row = ws.getRow(r);
+          if (!row) continue;
+
+          let rowDateIso = "";
+          if (dateColIdx) {
+            const dObj = parseRowDate(row.getCell(dateColIdx).value, row.getCell(dateColIdx));
+            if (dObj && dObj.isoKey) rowDateIso = dObj.isoKey;
+          }
+
+          let rowRes = "";
+          if (resColIdx) {
+            rowRes = WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/[,.]0+$/, "").trim();
+          }
+
+          if (enteredDateIso && rowDateIso) {
+            if (rowDateIso === enteredDateIso) {
+              foundDateMatchLast = r;
+              if (enteredRes && (rowRes === enteredRes || (/^\d+$/.test(rowRes) && parseInt(rowRes, 10) === parseInt(enteredRes, 10)))) {
+                foundStaffAndDateMatchLast = r;
+              }
+            } else if (rowDateIso > enteredDateIso && !foundFirstLaterDate) {
+              foundFirstLaterDate = r;
+            }
+          }
+        }
+
+        if (foundStaffAndDateMatchLast) {
+          insertAtRowIndex = foundStaffAndDateMatchLast + 1;
+        } else if (foundDateMatchLast) {
+          insertAtRowIndex = foundDateMatchLast + 1;
+        } else if (foundFirstLaterDate) {
+          insertAtRowIndex = foundFirstLaterDate;
+        } else {
+          insertAtRowIndex = maxRows + 1;
+        }
+      }
+
+      // 3. Zeile in Worksheet einfügen
+      const insertedRow = ws.insertRow(insertAtRowIndex, rowValues);
+
+      // Formate und Ausrichtung setzen
+      for (let c = 1; c <= colCount; c++) {
+        const cell = insertedRow.getCell(c);
+        if (c === dateColIdx) {
+          cell.numFmt = "DD.MM.YYYY";
+          cell.alignment = { horizontal: "center", vertical: "middle" };
+        } else if (c === resColIdx) {
+          if (/^\d{1,4}$/.test(String(cell.value || "").trim())) {
+            cell.numFmt = "0000";
+          }
+          cell.alignment = { horizontal: "center", vertical: "middle" };
+        } else if (c === hoursColIdx && typeof cell.value === "number") {
+          cell.numFmt = "#,##0.0";
+          cell.alignment = { horizontal: "right", vertical: "middle" };
+        }
+      }
+
+      // 4. Manuelle Korrekturen anpassen (Zeilen >= insertAtRowIndex verschieben sich um +1)
+      const updatedCorrections = {};
+      for (const [key, val] of Object.entries(state.appliedCorrections || {})) {
+        const parts = key.split("_");
+        const r = parseInt(parts[0], 10);
+        const c = parseInt(parts[1], 10);
+        if (r >= insertAtRowIndex) {
+          updatedCorrections[`${r + 1}_${c}`] = val;
+        } else {
+          updatedCorrections[key] = val;
+        }
+      }
+      state.appliedCorrections = updatedCorrections;
+
+      // 5. Modal schließen
+      closeInsertRowModal();
+
+      // 6. Neu analysieren & UI aktualisieren
+      state.lastInsertedRow = insertAtRowIndex;
+      if (enteredRes) state.highlightEmployeeRes = enteredRes;
+
+      // UI & Analyse aktualisieren (OHNE Scrollen nach oben und ohne Toast-Überschreibung!)
+      runInspection({ skipScroll: true, skipToast: true });
+
+      showToast(`✅ Zeile erfolgreich an Position ${insertAtRowIndex} in Prüfdatei eingefügt!`);
+
+      // Wenn aus der Wochentabelle aufgerufen: Wochentabelle direkt wieder im Blick behalten
+      if (state.modalCaller === "timesheet") {
+        setTimeout(() => {
+          const tsSec = document.getElementById("timesheet-section");
+          if (tsSec) {
+            tsSec.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }, 50);
+      } else if (state.modalCaller === "fulltable") {
+        activateTab("fulltable");
+      }
+    } catch (err) {
+      console.error("Fehler beim Einfügen der Zeile:", err);
+      alert("Fehler beim Einfügen der Zeile: " + err.message);
+    }
+  }
+
+  // Event Listeners für Zeile nachtragen / bearbeiten Modal
+  if (btnCloseInsertModal) btnCloseInsertModal.addEventListener("click", closeInsertRowModal);
+  if (btnCancelInsertRow) btnCancelInsertRow.addEventListener("click", closeInsertRowModal);
+  if (modalInsertRow) {
+    modalInsertRow.addEventListener("click", (e) => {
+      if (e.target === modalInsertRow) closeInsertRowModal();
+    });
+  }
+  if (btnConfirmInsertRow) {
+    btnConfirmInsertRow.addEventListener("click", () => {
+      if (state.modalRowMode === "edit" && state.modalEditRowIdx) {
+        executeSaveEditedRow(state.modalEditRowIdx);
+      } else {
+        executeInsertRow();
+      }
+    });
+  }
+  if (btnOpenInsertRowActionbar) {
+    btnOpenInsertRowActionbar.addEventListener("click", () => {
+      state.modalCaller = "timesheet";
+      openInsertRowModal(null);
+    });
+  }
+  if (btnOpenInsertRowFulltable) {
+    btnOpenInsertRowFulltable.addEventListener("click", () => {
+      state.modalCaller = "fulltable";
+      openInsertRowModal(null);
+    });
+  }
+  if (btnOpenInsertRowTimesheet) {
+    btnOpenInsertRowTimesheet.addEventListener("click", () => {
+      state.modalCaller = "timesheet";
+      openInsertRowModal(null);
+    });
+  }
+
+  // Event Listeners für Buchung-Auswählen Modal
+  if (btnCloseChooseModal) btnCloseChooseModal.addEventListener("click", closeChooseBookingModal);
+  if (btnCloseChoose) btnCloseChoose.addEventListener("click", closeChooseBookingModal);
+  if (modalChooseBooking) {
+    modalChooseBooking.addEventListener("click", (e) => {
+      if (e.target === modalChooseBooking) closeChooseBookingModal();
+    });
+  }
+
+  document.querySelectorAll('input[name="insert-pos-mode"]').forEach(radio => {
+    radio.addEventListener("change", (e) => {
+      const mode = e.target.value;
+      if (mode === "after_row") {
+        if (insertAfterRowContainer) insertAfterRowContainer.classList.remove("hidden");
+        if (insertAutoHint) insertAutoHint.classList.add("hidden");
+      } else {
+        if (insertAfterRowContainer) insertAfterRowContainer.classList.add("hidden");
+        if (mode === "auto") {
+          if (insertAutoHint) insertAutoHint.classList.remove("hidden");
+        } else {
+          if (insertAutoHint) insertAutoHint.classList.add("hidden");
+        }
+      }
+    });
+  });
+
+  if (insertRowSearch && insertTargetRowSelect) {
+    insertRowSearch.addEventListener("input", () => {
+      const q = insertRowSearch.value.trim().toLowerCase();
+      let matchCount = 0;
+      Array.from(insertTargetRowSelect.options).forEach(opt => {
+        const matches = !q || opt.textContent.toLowerCase().includes(q);
+        opt.style.display = matches ? "" : "none";
+        if (matches) matchCount++;
+      });
+      const countEl = document.getElementById("insert-row-match-count");
+      if (countEl) countEl.textContent = q ? `${matchCount} Treffer` : "";
+    });
+  }
+
+  // --- Demo-Dateien direkt im Speicher laden ---
+  if (btnLoadDemo) {
+    btnLoadDemo.addEventListener("click", async () => {
+      btnLoadDemo.disabled = true;
+      btnLoadDemo.innerHTML = `<span class="icon">⏳</span> Erstelle Demo...`;
+
+    // 0. Demo-Mitarbeiter im Browser speichern (falls noch keine gespeichert)
+    if (state.staffList.length === 0) {
+      const demoStaff = [
+        { resource: "0045", name: "Max Mustermann", dept: "Montage" },
+        { resource: "0120", name: "Anna Schmidt", dept: "Kundendienst" },
+        { resource: "0300", name: "Michael Weber", dept: "Logistik" },
+        { resource: "0400", name: "Sarah Fischer", dept: "Projektleitung" },
+        { resource: "0500", name: "Thomas Becker", dept: "Qualitätssicherung" },
+        { resource: "0600", name: "Julia Wagner", dept: "Service" },
+        { resource: "0700", name: "Stefan Hoffmann", dept: "Instandhaltung" },
+        { resource: "1773", name: "Uwe Althön", dept: "Bauleitung" },
+        { resource: "1373", name: "Uwe Althön", dept: "Bauleitung" }
+      ];
+      saveStaffToStorage(demoStaff);
+    }
+
+    // 1. Referenz-Arbeitsmappe
+    const refWb = new ExcelJS.Workbook();
+    const refWs = refWb.addWorksheet("Stammdaten");
+    refWs.columns = [
+      { header: "Artikelnummer", key: "art", width: 16 },
+      { header: "EAN_Code", key: "ean", width: 18 },
+      { header: "Kundennummer", key: "knd", width: 16 },
+      { header: "PLZ", key: "plz", width: 10 },
+      { header: "Leistungsnummer", key: "leist", width: 18 },
+      { header: "Resourcen Nummer", key: "res", width: 18 },
+      { header: "Bezeichnung", key: "bez", width: 30 }
+    ];
+
+    const refRows = [
+      ["10021", "4012345000101", "KND-80410", "10115", "12",   "0045", "Laptop Pro 15 Zoll"],
+      ["10022", "4012345000102", "KND-80420", "20095", "45",   "0120", "Kabellose Maus Optical"],
+      ["10023", "4012345000103", "KND-80430", "30159", "78",   "0300", "Mechanische Tastatur RGB"],
+      ["10024", "4012345000104", "KND-80440", "40213", "88",   "0400", "USB-C Dockingstation"],
+      ["10025", "4012345000105", "KND-80450", "50667", "1100", "0500", "Ultra-HD Monitor 27 Zoll"],
+      ["10026", "4012345000106", "KND-80460", "60311", "1200", "0600", "Noise-Cancelling Headset"],
+      ["10027", "4012345000107", "KND-80470", "70173", "1300", "0700", "Externe NVMe SSD 1TB"],
+      ["10028", "4012345000108", "KND-80480", "80331", "1400", "1773", "Baustellen-Server Mobile"]
+    ];
+
+    refRows.forEach(r => refWs.addRow(r));
+
+    // Arbeitsblatt "Personalstamm" in der Referenzdatei (Spalte A: Personalnummer, Spalte B: Name)
+    const staffWs = refWb.addWorksheet("Personalstamm");
+    staffWs.columns = [
+      { header: "Personalnummer", key: "persnr", width: 18 },
+      { header: "Name", key: "name", width: 25 },
+      { header: "Abteilung", key: "dept", width: 20 }
+    ];
+    const staffRows = [
+      ["0045", "Max Mustermann", "Montage"],
+      ["0120", "Anna Schmidt", "Kundendienst"],
+      ["0300", "Michael Weber", "Logistik"],
+      ["0400", "Sarah Fischer", "Projektleitung"],
+      ["0500", "Thomas Becker", "Qualitätssicherung"],
+      ["0600", "Julia Wagner", "Service"],
+      ["0700", "Stefan Hoffmann", "Instandhaltung"],
+      ["1773", "Uwe Althön", "Bauleitung"],
+      ["1373", "Uwe Althön", "Bauleitung"]
+    ];
+    staffRows.forEach(r => staffWs.addRow(r));
+
+    // Mitarbeiter direkt aus der Referenz-Arbeitsmappe extrahieren & registrieren
+    extractStaffFromReferenceWorkbook(refWb);
+
+    const refBuf = await refWb.xlsx.writeBuffer();
+    state.refWorkbook = refWb;
+    state.refFileName = "Beispiel_Referenz_Stammdaten.xlsx";
+    refFilename.textContent = state.refFileName;
+    populateSheetSelect(selectRefSheet, refWb.worksheets);
+    state.currentRefSheet = selectRefSheet.value;
+    refFileInfo.classList.remove("hidden");
+    dropRef.querySelector(".drop-zone-content").classList.add("hidden");
+
+    // Falls noch keine Referenzdatei im Browser gespeichert ist, Demo-Referenz speichern
+    const storedRef = await loadRefFileFromStorage();
+    if (!storedRef) {
+      await saveRefFileToStorage(state.refFileName, refBuf, state.currentRefSheet);
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Im Browser gespeichert";
+        refStorageBadge.className = "badge badge-ok";
+      }
+      if (refInfoDetail) {
+        refInfoDetail.textContent = "💾 Im Browser gespeichert (dauerhaft erhalten)";
+      }
+    } else {
+      if (refStorageBadge) {
+        refStorageBadge.textContent = "Demo aktiv";
+        refStorageBadge.className = "badge badge-warning";
+      }
+      if (refInfoDetail) {
+        refInfoDetail.textContent = "Demo-Daten aktiv (gespeicherte Datei bleibt erhalten)";
+      }
+    }
+
+    // 2. Prüfdatei-Arbeitsmappe (mit Datum, Menge/Stunden und Ressourcen)
+    const tgtWb = new ExcelJS.Workbook();
+    const tgtWs = tgtWb.addWorksheet("Report");
+    tgtWs.columns = [
+      { header: "Datum", key: "dat", width: 14 },
+      { header: "Artikelnummer", key: "art", width: 16 },
+      { header: "Resourcen Nummer", key: "res", width: 18 },
+      { header: "Menge", key: "mng", width: 10 },
+      { header: "Leistung", key: "leist", width: 16 },
+      { header: "EAN_Code", key: "ean", width: 18 }
+    ];
+
+    const tgtRows = [
+      ["15.09.2026", "10021", "0045", 8.0, "",     "4012345000101"], // Leistung leer -> OK_LEER; 8 Std für Max Mustermann
+      ["15.09.2026", "10022", "45",   4.5, "45",   "4012345000102"], // Res '45' -> wird '0045'; Leistung '45' OK; 4.5 Std für Max
+      ["16.09.2026", "10023", "120",  7.5, "78",   "4012345000103"], // Res '120' -> wird '0120'; Leistung '78' OK; 7.5 Std für Anna Schmidt
+      ["16.09.2026", "10042", "0400", 8.0, "54",   "4012345000104"], // Artikel Zahlendreher (10042); Leistung Zahlendreher ('54'); 8 Std Sarah Fischer
+      ["17.09.2026", "10025", "0500", 6.0, "1100", "4012345000150"], // EAN Zahlendreher; 6 Std Thomas Becker
+      ["17.09.2026", "99999", "0700", 8.5, "",     "4012345000107"], // 99999 Nicht existent; 8.5 Std Stefan Hoffmann
+      ["17.09.2026", "10028", "1773", 8.0, "1400", "4012345000108"], // 8 Std Uwe Althön (Personalnummer 1773)
+      ["17.09.2026", "10027", "1373", 7.5, "1300", "4012345000107"], // 7.5 Std Uwe Althön (Personalnummer 1373)
+      ["17.09.2026", "10026", "9900", 4.0, "1200", "4012345000106"]  // Fremd-Ressource 9900 (Maschine/Bagger - kein Mitarbeiter)
+    ];
+
+    tgtRows.forEach(r => tgtWs.addRow(r));
+    const tgtBuf = await tgtWb.xlsx.writeBuffer();
+    state.targetWorkbook = tgtWb;
+    state.lastTargetBuffer = tgtBuf;
+    state.targetFileName = "Beispiel_Zu_Pruefen.xlsx";
+    tgtFilename.textContent = state.targetFileName;
+    populateSheetSelect(selectTgtSheet, tgtWb.worksheets);
+    state.currentTargetSheet = selectTgtSheet.value;
+    tgtFileInfo.classList.remove("hidden");
+    dropTgt.querySelector(".drop-zone-content").classList.add("hidden");
+
+    if (tgtStatusBadge) {
+      tgtStatusBadge.textContent = "Bereit zur Prüfung";
+      tgtStatusBadge.className = "badge badge-ok";
+      tgtStatusBadge.style.display = "inline-block";
+    }
+
+    btnLoadDemo.disabled = false;
+    btnLoadDemo.innerHTML = `<span class="icon">✨</span> Demo-Dateien laden`;
+
+    checkReadyForConfig();
+    showToast("Demo-Dateien & Mitarbeiter geladen! Klicken Sie auf 'Prüfung starten'.");
+  });
+  }
+
+  function getColLetter(colIdx) {
+    let temp = "";
+    let letter = "";
+    while (colIdx > 0) {
+      temp = (colIdx - 1) % 26;
+      letter = String.fromCharCode(temp + 65) + letter;
+      colIdx = (colIdx - temp - 1) / 26;
+    }
+    return letter;
+  }
+
+  let toastTimer = null;
+  function showToast(msg) {
+    if (toastTimer) clearTimeout(toastTimer);
+    toast.textContent = msg;
+    toast.classList.remove("hidden");
+    toastTimer = setTimeout(() => {
+      toast.classList.add("hidden");
+    }, 3500);
   }
 
   function escapeHtml(str) {
-    if (str === null || str === undefined) return '';
+    if (str === null || str === undefined) return "";
     return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
-
-  function showToast(message, type = 'info') {
-    const container = document.getElementById('toastContainer');
-    if (!container) return;
-
-    const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-    toast.innerHTML = `
-      <span>${escapeHtml(message)}</span>
-      <span style="cursor: pointer; opacity: 0.7; font-weight: bold;">&times;</span>
-    `;
-
-    toast.querySelector('span:last-child').addEventListener('click', () => {
-      toast.remove();
-    });
-
-    container.appendChild(toast);
-
-    setTimeout(() => {
-      toast.style.opacity = '0';
-      toast.style.transform = 'translateY(10px)';
-      toast.style.transition = 'all 0.3s ease';
-      setTimeout(() => toast.remove(), 300);
-    }, 4000);
-  }
-
-})();
+});
