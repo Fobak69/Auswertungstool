@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.4 GELADEN - 2026-10-14 ***");
+console.log("[APP.JS] *** VERSION 4.5 GELADEN - 2026-10-14 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -188,9 +188,12 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         });
         if (found) return found;
+        if ((ws.actualColumnCount && ws.actualColumnCount >= 4) || (ws.columnCount && ws.columnCount >= 4)) {
+          return 4;
+        }
       }
     }
-    return null;
+    return 4;
   }
 
   // --- IndexedDB Speicher für die Referenzdatei ---
@@ -374,9 +377,14 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (err) {
       console.error(err);
-      const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
-      if (isOldXls) {
+      const lowerName = (file.name || "").toLowerCase();
+      const isOldXls = lowerName.endsWith(".xls") && !lowerName.endsWith(".xlsx");
+      if (lowerName.endsWith(".pdf")) {
+        alert(`📄 Die Datei "${file.name}" ist ein PDF-Dokument.\n\nBitte laden Sie hier eine Excel-Arbeitsmappe (.xlsx) hoch.`);
+      } else if (isOldXls) {
         alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als "Excel-Arbeitsmappe (.xlsx)" ab.`);
+      } else if (err.message && err.message.toLowerCase().includes("central directory")) {
+        alert(`Die Datei "${file.name}" konnte nicht als Excel-Datei (.xlsx) gelesen werden.\n\nWahrscheinlich handelt es sich um ein anderes Dateiformat (z. B. PDF, Text) oder die Datei ist beschädigt. Bitte wählen Sie eine gültige .xlsx-Datei.`);
       } else {
         alert("Fehler beim Laden der Referenzdatei: " + err.message);
       }
@@ -385,6 +393,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   setupDropZone(dropTgt, inputTgt, async (file) => {
     try {
+      const lowerName = (file.name || "").toLowerCase();
+      if (lowerName.endsWith(".pdf")) {
+        alert(`📄 Die Datei "${file.name}" ist ein PDF-Dokument.\n\nBitte laden Sie hier eine Excel-Arbeitsmappe (.xlsx) hoch.`);
+        return;
+      }
+
       state.targetFileName = file.name;
       state.appliedCorrections = {};
       const arrayBuffer = await file.arrayBuffer();
@@ -409,9 +423,14 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast(`Prüfdatei "${file.name}" geladen.`);
     } catch (err) {
       console.error(err);
-      const isOldXls = file.name.toLowerCase().endsWith(".xls") && !file.name.toLowerCase().endsWith(".xlsx");
-      if (isOldXls) {
+      const lowerName = (file.name || "").toLowerCase();
+      const isOldXls = lowerName.endsWith(".xls") && !lowerName.endsWith(".xlsx");
+      if (lowerName.endsWith(".pdf")) {
+        alert(`📄 Die Datei "${file.name}" ist ein PDF-Dokument.\n\nBitte laden Sie hier eine Excel-Arbeitsmappe (.xlsx) hoch.`);
+      } else if (isOldXls) {
         alert(`Die Datei "${file.name}" liegt im alten Excel 97-2003-Format (.xls) vor.\n\nBitte öffnen Sie die Datei kurz in Excel und speichern Sie sie über "Datei > Speichern unter" als "Excel-Arbeitsmappe (.xlsx)" ab.`);
+      } else if (err.message && err.message.toLowerCase().includes("central directory")) {
+        alert(`Die Datei "${file.name}" konnte nicht als Excel-Datei (.xlsx) gelesen werden.\n\nWahrscheinlich handelt es sich um ein anderes Dateiformat (z. B. PDF, Text) oder die Datei ist beschädigt. Bitte wählen Sie eine gültige .xlsx-Datei.`);
       } else {
         alert("Fehler beim Laden der Prüfdatei: " + err.message);
       }
@@ -2779,8 +2798,8 @@ document.addEventListener("DOMContentLoaded", () => {
           cell.value = cleanRes;
           cell.numFmt = "0000";
         }
-      } else if (hoursColIdx && colNum === hoursColIdx) {
-        // Arbeitszeit / Stunden-Spalte: Zahl mit ZWEI Dezimalstellen (z.B. 0,25 oder 1,50)
+      } else if (colNum === 4 || (hoursColIdx && colNum === hoursColIdx)) {
+        // Spalte D & Arbeitszeit / Stunden-Spalte: IMMER Zahl mit ZWEI Dezimalstellen (z.B. 3,50 oder 0,25 oder 4,00)
         let cleanVal = valStr.replace(",", ".");
         let num = parseFloat(cleanVal);
         if (!isNaN(num)) {
@@ -2790,15 +2809,15 @@ document.addEventListener("DOMContentLoaded", () => {
           cell.value = valStr;
           cell.numFmt = "0.00";
         }
-      } else if (colNum === 4 || colNum === 5) {
-        // Spalte D & Spalte E: Einfache Zahlen OHNE führende Null (z.B. 8 statt 0008)
+      } else if (colNum === 5) {
+        // Spalte E: Einfache Zahlen OHNE führende Null (z.B. 8 statt 0008)
         let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
         let unpadded = cleanVal.replace(/^0+/, "") || "0";
         if (/^-?\d+$/.test(unpadded)) {
           cell.value = parseInt(unpadded, 10);
           cell.numFmt = "0";
         } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
-          // Falls Dezimalzahl in Spalte D/E, NIEMALS runden!
+          // Falls Dezimalzahl in Spalte E, NIEMALS runden!
           const num = parseFloat(cleanVal.replace(",", "."));
           if (!isNaN(num)) {
             cell.value = num;
@@ -2872,8 +2891,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const col = ws.getColumn(colIdx);
       const isDateCol = (colIdx === dateColIdx || colIdx === 1);
       const isResCol = (colIdx === 3); // EXKLUSIV Spalte C!
-      const isHoursCol = (hoursColIdx && colIdx === hoursColIdx);
-      const isSimpleNumCol = (!isHoursCol && (colIdx === 4 || colIdx === 5)); // Spalte D und Spalte E (nur falls nicht Stunden)!
+      const isHoursCol = (colIdx === 4 || (hoursColIdx && colIdx === hoursColIdx)); // Spalte D & Stundenspalte: IMMER 2 Dezimalstellen (0.00)!
+      const isSimpleNumCol = (!isHoursCol && colIdx === 5); // NUR Spalte E (Leistungsnummer)!
 
       if (isDateCol) {
         col.numFmt = "DD.MM.YYYY";
@@ -2899,7 +2918,7 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
       } else if (isHoursCol) {
-        // Arbeitszeit / Stunden-Spalte: Zahl mit 2 Dezimalstellen formatieren (0.00 -> 0,25 oder 1,50)
+        // Spalte D & Arbeitszeit / Stunden-Spalte: Zahl mit 2 Dezimalstellen formatieren (0.00 -> 3,50 oder 0,25 oder 4,00)
         col.numFmt = "0.00";
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
@@ -2914,7 +2933,7 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
       } else if (isSimpleNumCol) {
-        // Spalte D und Spalte E: Einfache Zahlen OHNE führende Nullen (Kein col.numFmt="0" auf Spaltenebene, damit Dezimalzahlen nicht abgeschnitten werden!)
+        // Spalte E: Einfache Zahlen OHNE führende Nullen
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
           if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
@@ -3030,7 +3049,7 @@ document.addEventListener("DOMContentLoaded", () => {
       a.download = fileName;
       document.body.appendChild(a);
       a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 60000);
       console.log("[downloadBuffer] Blob-URL Download für:", fileName);
     } else {
       // Fallback für file:// Protokoll: Data-URL
@@ -3081,9 +3100,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
     if (!bestHoursCol) {
-      const mengeCol = tgtHeaders.find(h => h.name.toLowerCase().includes("menge") || h.letter === "D" || h.letter === "G");
-      if (mengeCol) bestHoursCol = mengeCol.colNum;
-      else if (tgtHeaders.length >= 4) bestHoursCol = tgtHeaders[3].colNum;
+      const colD = tgtHeaders.find(h => h.letter === "D" || h.colNum === 4);
+      if (colD) bestHoursCol = colD.colNum;
+      else {
+        const mengeCol = tgtHeaders.find(h => h.name.toLowerCase().includes("menge") || h.letter === "G");
+        if (mengeCol) bestHoursCol = mengeCol.colNum;
+        else if (tgtHeaders.length >= 4) bestHoursCol = tgtHeaders[3].colNum;
+      }
     }
 
     // 3. Suche nach Ressourcenspalte
@@ -4234,7 +4257,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         cell.value = cleanRes;
         state.appliedCorrections[cellKey] = cleanRes;
-      } else if (hoursColIdx && colIdx === hoursColIdx) {
+      } else if (colIdx === 4 || (hoursColIdx && colIdx === hoursColIdx)) {
+        // Spalte D & Arbeitszeit / Stunden-Spalte: IMMER 2 Dezimalstellen (0.00)!
         const cleanVal = valStr.replace(",", ".");
         const num = parseFloat(cleanVal);
         if (!isNaN(num)) {
@@ -4243,8 +4267,9 @@ document.addEventListener("DOMContentLoaded", () => {
           state.appliedCorrections[cellKey] = num;
         } else {
           cell.value = valStr;
+          cell.numFmt = "0.00";
         }
-      } else if (colIdx === 4 || colIdx === 5) {
+      } else if (colIdx === 5) {
         let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
         let unpadded = cleanVal.replace(/^0+/, "") || "0";
         if (/^-?\d+$/.test(unpadded)) {
@@ -4751,7 +4776,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const c = h.colNum;
       const isDate = (c === dateColIdx);
       const isRes = (c === resColIdx && c !== dateColIdx);
-      const isHours = (c === hoursColIdx && c !== dateColIdx && c !== resColIdx);
+      const isHours = ((c === 4 || c === hoursColIdx) && c !== dateColIdx && c !== resColIdx);
 
       fieldsHtml += `<div class="field-item">`;
       fieldsHtml += `<label for="modal-field-${c}"><span>${escapeHtml(h.name)}</span> <span class="field-col-tag">Spalte ${h.letter}</span></label>`;
@@ -5262,7 +5287,7 @@ document.addEventListener("DOMContentLoaded", () => {
           cell.alignment = { horizontal: "center", vertical: "middle" };
           state.appliedCorrections[cellKey] = cleanRes;
           savedRes = cleanRes;
-        } else if (hoursColIdx && c === hoursColIdx) {
+        } else if (c === 4 || (hoursColIdx && c === hoursColIdx)) {
           if (val !== "") {
             const cleanVal = val.replace(",", ".");
             const num = parseFloat(cleanVal);
@@ -5273,13 +5298,14 @@ document.addEventListener("DOMContentLoaded", () => {
               state.appliedCorrections[cellKey] = num;
             } else {
               cell.value = val;
+              cell.numFmt = "0.00";
               state.appliedCorrections[cellKey] = val;
             }
           } else {
             cell.value = null;
             state.appliedCorrections[cellKey] = "";
           }
-        } else if (c === 4 || c === 5) {
+        } else if (c === 5) {
           let cleanVal = val.replace(/[,.]0+$/, "").trim();
           let unpadded = cleanVal.replace(/^0+/, "") || "0";
           if (/^-?\d+$/.test(unpadded)) {
@@ -5402,7 +5428,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (/^\d{1,4}$/.test(enteredRes)) {
             val = WebExcelEngine.padNumber(enteredRes, 4);
           }
-        } else if (c === hoursColIdx && val) {
+        } else if ((c === 4 || c === hoursColIdx) && val) {
           const parsedH = parseFloat(val.replace(",", "."));
           if (!isNaN(parsedH)) val = parsedH;
         } else if (/^-?\d+[.,]\d+$/.test(val)) {
@@ -5485,7 +5511,7 @@ document.addEventListener("DOMContentLoaded", () => {
             cell.numFmt = "0000";
           }
           cell.alignment = { horizontal: "center", vertical: "middle" };
-        } else if (c === hoursColIdx && typeof cell.value === "number") {
+        } else if ((c === 4 || c === hoursColIdx) && typeof cell.value === "number") {
           cell.numFmt = "0.00";
           cell.alignment = { horizontal: "right", vertical: "middle" };
         } else if (typeof cell.value === "number" && Math.abs(cell.value % 1) > 0.0001) {
