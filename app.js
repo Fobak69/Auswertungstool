@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.5 GELADEN - 2026-10-14 ***");
+console.log("[APP.JS] *** VERSION 4.6 GELADEN - 2026-10-14 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -194,6 +194,19 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
     return 4;
+  }
+
+  // Setzt das numFmt einer Zelle sicher, indem das style-Objekt geklont wird.
+  // WICHTIG: ExcelJS teilt style-Objekte über Zellen derselben Arbeitsmappe!
+  // Mutiert man cell.numFmt direkt, werden andere Spalten (z.B. Spalte D durch Spalte E) überschrieben!
+  function setCellNumFmt(cell, numFmt, extraStyle = null) {
+    if (!cell) return;
+    const base = cell.style ? Object.assign({}, cell.style) : {};
+    base.numFmt = numFmt;
+    if (extraStyle) {
+      Object.assign(base, extraStyle);
+    }
+    cell.style = base;
   }
 
   // --- IndexedDB Speicher für die Referenzdatei ---
@@ -2447,35 +2460,37 @@ document.addEventListener("DOMContentLoaded", () => {
                   let dispDate = val;
                   if (dParts.length === 3) dispDate = `${dParts[2]}.${dParts[1]}.${dParts[0]}`;
                   cell.value = dispDate;
-                  cell.numFmt = "DD.MM.YYYY";
+                  setCellNumFmt(cell, "DD.MM.YYYY", { alignment: { horizontal: "center", vertical: "middle" } });
                 } else if (/^\d{1,4}$/.test(val) && (targetItem.col_idx === 3 || (targetItem.col_letter && targetItem.col_letter.toUpperCase() === "C"))) {
                   cell.value = WebExcelEngine.padNumber(val, 4);
-                  cell.numFmt = "0000";
-                } else if (hoursColIdx && targetItem.col_idx === hoursColIdx) {
+                  setCellNumFmt(cell, "0000", { alignment: { horizontal: "center", vertical: "middle" } });
+                } else if (targetItem.col_idx === 4 || (hoursColIdx && targetItem.col_idx === hoursColIdx)) {
                   const cleanVal = val.replace(",", ".");
                   const num = parseFloat(cleanVal);
                   if (!isNaN(num)) {
                     cell.value = num;
-                    cell.numFmt = "0.00";
                   } else {
                     cell.value = val;
                   }
-                } else if (targetItem.col_idx === 4 || targetItem.col_idx === 5) {
+                  setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
+                } else if (targetItem.col_idx === 5) {
                   let cleanVal = val.replace(/[,.]0+$/, "").trim();
                   let unpadded = cleanVal.replace(/^0+/, "") || "0";
                   if (/^-?\d+$/.test(unpadded)) {
                     cell.value = parseInt(unpadded, 10);
-                    cell.numFmt = "0";
+                    setCellNumFmt(cell, "0");
                   } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
                     const num = parseFloat(cleanVal.replace(",", "."));
                     if (!isNaN(num)) {
                       cell.value = num;
-                      cell.numFmt = "0.00";
+                      setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
                     } else {
                       cell.value = cleanVal;
+                      setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
                     }
                   } else {
                     cell.value = cleanVal;
+                    setCellNumFmt(cell, "0");
                   }
                 } else if (/^\d+$/.test(val)) {
                   cell.value = parseInt(val, 10);
@@ -2542,32 +2557,34 @@ document.addEventListener("DOMContentLoaded", () => {
             cell.value = null;
           } else if (/^\d{1,4}$/.test(valStr) && (r.col_idx === 3 || (targetItem.col_letter && targetItem.col_letter.toUpperCase() === "C"))) {
             cell.value = WebExcelEngine.padNumber(valStr, 4);
-            cell.numFmt = "0000";
-          } else if (hoursColIdx && r.col_idx === hoursColIdx) {
+            setCellNumFmt(cell, "0000", { alignment: { horizontal: "center", vertical: "middle" } });
+          } else if (r.col_idx === 4 || (hoursColIdx && r.col_idx === hoursColIdx)) {
             const cleanVal = valStr.replace(",", ".");
             const num = parseFloat(cleanVal);
             if (!isNaN(num)) {
               cell.value = num;
-              cell.numFmt = "0.00";
             } else {
               cell.value = valStr;
             }
-          } else if (r.col_idx === 4 || r.col_idx === 5) {
+            setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
+          } else if (r.col_idx === 5) {
             let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
             let unpadded = cleanVal.replace(/^0+/, "") || "0";
             if (/^-?\d+$/.test(unpadded)) {
               cell.value = parseInt(unpadded, 10);
-              cell.numFmt = "0";
+              setCellNumFmt(cell, "0");
             } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
               const num = parseFloat(cleanVal.replace(",", "."));
               if (!isNaN(num)) {
                 cell.value = num;
-                cell.numFmt = "0.00";
+                setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               } else {
                 cell.value = cleanVal;
+                setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               }
             } else {
               cell.value = cleanVal;
+              setCellNumFmt(cell, "0");
             }
           } else if (/^\d+$/.test(valStr) && valStr.length < 10) {
             cell.value = parseInt(valStr, 10);
@@ -2787,48 +2804,46 @@ document.addEventListener("DOMContentLoaded", () => {
           dispDate = `${dParts[2]}.${dParts[1]}.${dParts[0]}`;
         }
         cell.value = dispDate;
-        cell.numFmt = "DD.MM.YYYY";
+        setCellNumFmt(cell, "DD.MM.YYYY", { alignment: { horizontal: "center", vertical: "middle" } });
       } else if (colNum === 3) {
         // Spalte C: AUSSCHLIESSLICH 0000 Formatierung (mit führender Null, 4-stellig)
         let cleanRes = valStr.replace(/[,.]0+$/, "").trim();
         if (/^\d{1,4}$/.test(cleanRes)) {
           cell.value = WebExcelEngine.padNumber(cleanRes, 4);
-          cell.numFmt = "0000";
         } else {
           cell.value = cleanRes;
-          cell.numFmt = "0000";
         }
+        setCellNumFmt(cell, "0000", { alignment: { horizontal: "center", vertical: "middle" } });
       } else if (colNum === 4 || (hoursColIdx && colNum === hoursColIdx)) {
         // Spalte D & Arbeitszeit / Stunden-Spalte: IMMER Zahl mit ZWEI Dezimalstellen (z.B. 3,50 oder 0,25 oder 4,00)
         let cleanVal = valStr.replace(",", ".");
         let num = parseFloat(cleanVal);
         if (!isNaN(num)) {
           cell.value = num;
-          cell.numFmt = "0.00";
         } else {
           cell.value = valStr;
-          cell.numFmt = "0.00";
         }
+        setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
       } else if (colNum === 5) {
         // Spalte E: Einfache Zahlen OHNE führende Null (z.B. 8 statt 0008)
         let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
         let unpadded = cleanVal.replace(/^0+/, "") || "0";
         if (/^-?\d+$/.test(unpadded)) {
           cell.value = parseInt(unpadded, 10);
-          cell.numFmt = "0";
+          setCellNumFmt(cell, "0");
         } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
           // Falls Dezimalzahl in Spalte E, NIEMALS runden!
           const num = parseFloat(cleanVal.replace(",", "."));
           if (!isNaN(num)) {
             cell.value = num;
-            cell.numFmt = "0.00";
+            setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           } else {
             cell.value = cleanVal;
-            cell.numFmt = "0.00";
+            setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           }
         } else {
           cell.value = cleanVal;
-          cell.numFmt = "0";
+          setCellNumFmt(cell, "0");
         }
       } else if (/^-?\d+([.,]\d+)?$/.test(valStr)) {
         // Jede Dezimalzahl in jeder sonstigen Spalte als echte Float mit 0.00 speichern
@@ -2837,9 +2852,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!isNaN(num)) {
           cell.value = num;
           if (cleanVal.includes(".") && !/\.0+$/.test(cleanVal)) {
-            cell.numFmt = "0.00";
+            setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           } else {
-            cell.numFmt = "0";
+            setCellNumFmt(cell, "0");
           }
         } else {
           cell.value = valStr;
@@ -2898,8 +2913,8 @@ document.addEventListener("DOMContentLoaded", () => {
         col.numFmt = "DD.MM.YYYY";
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
-          if (typeof cell.value === "number") {
-            cell.numFmt = "DD.MM.YYYY";
+          if (typeof cell.value === "number" || (cell.value && String(cell.value).includes("."))) {
+            setCellNumFmt(cell, "DD.MM.YYYY", { alignment: { horizontal: "center", vertical: "middle" } });
           }
         }
       } else if (isResCol) {
@@ -2907,7 +2922,7 @@ document.addEventListener("DOMContentLoaded", () => {
         col.numFmt = "0000";
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
-          cell.numFmt = "0000";
+          setCellNumFmt(cell, "0000", { alignment: { horizontal: "center", vertical: "middle" } });
           if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
             const s = WebExcelEngine.extractCellValue(cell.value, cell).replace(/[,.]0+$/, "").trim();
             if (/^\d{1,4}$/.test(s)) {
@@ -2922,7 +2937,7 @@ document.addEventListener("DOMContentLoaded", () => {
         col.numFmt = "0.00";
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
-          cell.numFmt = "0.00";
+          setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
             const rawVal = WebExcelEngine.extractCellValue(cell.value, cell);
             let s = String(rawVal).trim().replace(",", ".");
@@ -2934,6 +2949,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       } else if (isSimpleNumCol) {
         // Spalte E: Einfache Zahlen OHNE führende Nullen
+        col.numFmt = "0";
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
           if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
@@ -2943,12 +2959,12 @@ document.addEventListener("DOMContentLoaded", () => {
             let unpadded = s.replace(/^0+/, "") || "0";
             if (/^-?\d+$/.test(unpadded)) {
               cell.value = parseInt(unpadded, 10); // Wandelt "0008" oder "08" garantiert in 8 um!
-              cell.numFmt = "0";
+              setCellNumFmt(cell, "0");
             } else if (/^-?\d+\.\d+$/.test(s)) {
               const num = parseFloat(s);
               if (!isNaN(num)) {
                 cell.value = num;
-                cell.numFmt = "0.00";
+                setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               }
             }
           }
@@ -2964,12 +2980,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 const num = parseFloat(sTrim.replace(",", "."));
                 if (!isNaN(num)) {
                   cell.value = num;
-                  cell.numFmt = "0.00";
+                  setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
                 }
               }
             } else if (typeof cell.value === "number") {
               if (Math.abs(cell.value % 1) > 0.0001) {
-                cell.numFmt = "0.00";
+                setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               }
             }
           }
@@ -4248,14 +4264,14 @@ document.addEventListener("DOMContentLoaded", () => {
         cell.value = null;
       } else if (colIdx === dateColIdx || colIdx === 1) {
         cell.value = valStr;
-        cell.numFmt = "DD.MM.YYYY";
+        setCellNumFmt(cell, "DD.MM.YYYY", { alignment: { horizontal: "center", vertical: "middle" } });
       } else if (colIdx === resColIdx || colIdx === 3) {
         let cleanRes = valStr.replace(/[,.]0+$/, "").trim();
         if (/^\d{1,4}$/.test(cleanRes)) {
           cleanRes = WebExcelEngine.padNumber(cleanRes, 4);
-          cell.numFmt = "0000";
         }
         cell.value = cleanRes;
+        setCellNumFmt(cell, "0000", { alignment: { horizontal: "center", vertical: "middle" } });
         state.appliedCorrections[cellKey] = cleanRes;
       } else if (colIdx === 4 || (hoursColIdx && colIdx === hoursColIdx)) {
         // Spalte D & Arbeitszeit / Stunden-Spalte: IMMER 2 Dezimalstellen (0.00)!
@@ -4263,28 +4279,30 @@ document.addEventListener("DOMContentLoaded", () => {
         const num = parseFloat(cleanVal);
         if (!isNaN(num)) {
           cell.value = num;
-          cell.numFmt = "0.00";
+          setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           state.appliedCorrections[cellKey] = num;
         } else {
           cell.value = valStr;
-          cell.numFmt = "0.00";
+          setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
         }
       } else if (colIdx === 5) {
         let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
         let unpadded = cleanVal.replace(/^0+/, "") || "0";
         if (/^-?\d+$/.test(unpadded)) {
           cell.value = parseInt(unpadded, 10);
-          cell.numFmt = "0";
+          setCellNumFmt(cell, "0");
         } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
           const num = parseFloat(cleanVal.replace(",", "."));
           if (!isNaN(num)) {
             cell.value = num;
-            cell.numFmt = "0.00";
+            setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           } else {
             cell.value = cleanVal;
+            setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           }
         } else {
           cell.value = cleanVal;
+          setCellNumFmt(cell, "0");
         }
       } else if (/^\d+$/.test(valStr) && valStr.length < 10) {
         cell.value = parseInt(valStr, 10);
@@ -4295,7 +4313,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!isNaN(num)) {
           cell.value = num;
           if (cleanVal.includes(".")) {
-            cell.numFmt = "0.00";
+            setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
           }
           state.appliedCorrections[cellKey] = num;
         } else {
@@ -5270,8 +5288,7 @@ document.addEventListener("DOMContentLoaded", () => {
               dispDate = `${parts[2]}.${parts[1]}.${parts[0]}`;
             }
             cell.value = dispDate;
-            cell.numFmt = "DD.MM.YYYY";
-            cell.alignment = { horizontal: "center", vertical: "middle" };
+            setCellNumFmt(cell, "DD.MM.YYYY", { alignment: { horizontal: "center", vertical: "middle" } });
             state.appliedCorrections[cellKey] = dispDate;
           } else {
             cell.value = "";
@@ -5281,10 +5298,9 @@ document.addEventListener("DOMContentLoaded", () => {
           let cleanRes = val.replace(/[,.]0+$/, "").trim();
           if (/^\d{1,4}$/.test(cleanRes)) {
             cleanRes = WebExcelEngine.padNumber(cleanRes, 4);
-            cell.numFmt = "0000";
           }
           cell.value = cleanRes;
-          cell.alignment = { horizontal: "center", vertical: "middle" };
+          setCellNumFmt(cell, "0000", { alignment: { horizontal: "center", vertical: "middle" } });
           state.appliedCorrections[cellKey] = cleanRes;
           savedRes = cleanRes;
         } else if (c === 4 || (hoursColIdx && c === hoursColIdx)) {
@@ -5293,12 +5309,11 @@ document.addEventListener("DOMContentLoaded", () => {
             const num = parseFloat(cleanVal);
             if (!isNaN(num)) {
               cell.value = num;
-              cell.numFmt = "0.00";
-              cell.alignment = { horizontal: "right", vertical: "middle" };
+              setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               state.appliedCorrections[cellKey] = num;
             } else {
               cell.value = val;
-              cell.numFmt = "0.00";
+              setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               state.appliedCorrections[cellKey] = val;
             }
           } else {
@@ -5310,20 +5325,22 @@ document.addEventListener("DOMContentLoaded", () => {
           let unpadded = cleanVal.replace(/^0+/, "") || "0";
           if (/^-?\d+$/.test(unpadded)) {
             cell.value = parseInt(unpadded, 10);
-            cell.numFmt = "0";
+            setCellNumFmt(cell, "0");
             state.appliedCorrections[cellKey] = parseInt(unpadded, 10);
           } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
             const num = parseFloat(cleanVal.replace(",", "."));
             if (!isNaN(num)) {
               cell.value = num;
-              cell.numFmt = "0.00";
+              setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               state.appliedCorrections[cellKey] = num;
             } else {
               cell.value = cleanVal;
+              setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               state.appliedCorrections[cellKey] = cleanVal;
             }
           } else {
             cell.value = cleanVal;
+            setCellNumFmt(cell, "0");
             state.appliedCorrections[cellKey] = cleanVal;
           }
         } else {
@@ -5336,8 +5353,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const num = parseFloat(cleanVal);
             if (!isNaN(num)) {
               cell.value = num;
-              cell.numFmt = "0.00";
-              cell.alignment = { horizontal: "right", vertical: "middle" };
+              setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
               state.appliedCorrections[cellKey] = num;
             } else {
               cell.value = val;
@@ -5504,19 +5520,17 @@ document.addEventListener("DOMContentLoaded", () => {
       for (let c = 1; c <= colCount; c++) {
         const cell = insertedRow.getCell(c);
         if (c === dateColIdx) {
-          cell.numFmt = "DD.MM.YYYY";
-          cell.alignment = { horizontal: "center", vertical: "middle" };
+          setCellNumFmt(cell, "DD.MM.YYYY", { alignment: { horizontal: "center", vertical: "middle" } });
         } else if (c === resColIdx) {
           if (/^\d{1,4}$/.test(String(cell.value || "").trim())) {
-            cell.numFmt = "0000";
+            setCellNumFmt(cell, "0000", { alignment: { horizontal: "center", vertical: "middle" } });
+          } else {
+            cell.alignment = { horizontal: "center", vertical: "middle" };
           }
-          cell.alignment = { horizontal: "center", vertical: "middle" };
         } else if ((c === 4 || c === hoursColIdx) && typeof cell.value === "number") {
-          cell.numFmt = "0.00";
-          cell.alignment = { horizontal: "right", vertical: "middle" };
+          setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
         } else if (typeof cell.value === "number" && Math.abs(cell.value % 1) > 0.0001) {
-          cell.numFmt = "0.00";
-          cell.alignment = { horizontal: "right", vertical: "middle" };
+          setCellNumFmt(cell, "0.00", { alignment: { horizontal: "right", vertical: "middle" } });
         }
       }
 
