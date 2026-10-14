@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.3 GELADEN - 2026-10-14 ***");
+console.log("[APP.JS] *** VERSION 4.4 GELADEN - 2026-10-14 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -2805,16 +2805,23 @@ document.addEventListener("DOMContentLoaded", () => {
             cell.numFmt = "0.00";
           } else {
             cell.value = cleanVal;
-            cell.numFmt = "0";
+            cell.numFmt = "0.00";
           }
         } else {
           cell.value = cleanVal;
           cell.numFmt = "0";
         }
-      } else if (/^-?\d+(\.\d+)?$/.test(valStr.replace(",", "."))) {
-        const num = parseFloat(valStr.replace(",", "."));
+      } else if (/^-?\d+([.,]\d+)?$/.test(valStr)) {
+        // Jede Dezimalzahl in jeder sonstigen Spalte als echte Float mit 0.00 speichern
+        const cleanVal = valStr.replace(",", ".");
+        const num = parseFloat(cleanVal);
         if (!isNaN(num)) {
           cell.value = num;
+          if (cleanVal.includes(".") && !/\.0+$/.test(cleanVal)) {
+            cell.numFmt = "0.00";
+          } else {
+            cell.numFmt = "0";
+          }
         } else {
           cell.value = valStr;
         }
@@ -2907,8 +2914,7 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
       } else if (isSimpleNumCol) {
-        // Spalte D und Spalte E: Einfache Zahlen OHNE führende Nullen
-        col.numFmt = "0";
+        // Spalte D und Spalte E: Einfache Zahlen OHNE führende Nullen (Kein col.numFmt="0" auf Spaltenebene, damit Dezimalzahlen nicht abgeschnitten werden!)
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
           if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
@@ -2923,6 +2929,27 @@ document.addEventListener("DOMContentLoaded", () => {
               const num = parseFloat(s);
               if (!isNaN(num)) {
                 cell.value = num;
+                cell.numFmt = "0.00";
+              }
+            }
+          }
+        }
+      } else {
+        // Alle weiteren Spalten: Prüfe ob Zellen Zahlen mit Nachkommastellen enthalten und formatiere mit 0.00
+        for (let r = 2; r <= maxRows; r++) {
+          const cell = ws.getRow(r).getCell(colIdx);
+          if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
+            if (typeof cell.value === "string") {
+              const sTrim = cell.value.trim();
+              if (/^-?\d+([.,]\d+)$/.test(sTrim)) {
+                const num = parseFloat(sTrim.replace(",", "."));
+                if (!isNaN(num)) {
+                  cell.value = num;
+                  cell.numFmt = "0.00";
+                }
+              }
+            } else if (typeof cell.value === "number") {
+              if (Math.abs(cell.value % 1) > 0.0001) {
                 cell.numFmt = "0.00";
               }
             }
@@ -4236,9 +4263,19 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       } else if (/^\d+$/.test(valStr) && valStr.length < 10) {
         cell.value = parseInt(valStr, 10);
-      } else if (/^-?\d+(\.\d+)?$/.test(valStr.replace(",", "."))) {
-        const num = parseFloat(valStr.replace(",", "."));
-        cell.value = isNaN(num) ? valStr : num;
+        state.appliedCorrections[cellKey] = parseInt(valStr, 10);
+      } else if (/^-?\d+([.,]\d+)?$/.test(valStr)) {
+        const cleanVal = valStr.replace(",", ".");
+        const num = parseFloat(cleanVal);
+        if (!isNaN(num)) {
+          cell.value = num;
+          if (cleanVal.includes(".")) {
+            cell.numFmt = "0.00";
+          }
+          state.appliedCorrections[cellKey] = num;
+        } else {
+          cell.value = valStr;
+        }
       } else {
         cell.value = valStr;
       }
@@ -5171,8 +5208,11 @@ document.addEventListener("DOMContentLoaded", () => {
       let resColIdx = parseInt(selectTsResourceCol?.value, 10);
       if (isNaN(resColIdx) || resColIdx < 1) resColIdx = 3;
 
-      let hoursColIdx = parseInt(selectTsHoursCol?.value, 10);
-      if (isNaN(hoursColIdx) || hoursColIdx < 1) hoursColIdx = null;
+      let hoursColIdx = getHoursColIdx();
+      if (!hoursColIdx) {
+        let hVal = parseInt(selectTsHoursCol?.value, 10);
+        if (!isNaN(hVal) && hVal > 0) hoursColIdx = hVal;
+      }
 
       let colCount = 0;
       const headerRow = ws.getRow(1);
@@ -5222,9 +5262,10 @@ document.addEventListener("DOMContentLoaded", () => {
           cell.alignment = { horizontal: "center", vertical: "middle" };
           state.appliedCorrections[cellKey] = cleanRes;
           savedRes = cleanRes;
-        } else if (c === hoursColIdx) {
+        } else if (hoursColIdx && c === hoursColIdx) {
           if (val !== "") {
-            const num = parseFloat(val.replace(",", "."));
+            const cleanVal = val.replace(",", ".");
+            const num = parseFloat(cleanVal);
             if (!isNaN(num)) {
               cell.value = num;
               cell.numFmt = "0.00";
@@ -5238,13 +5279,48 @@ document.addEventListener("DOMContentLoaded", () => {
             cell.value = null;
             state.appliedCorrections[cellKey] = "";
           }
+        } else if (c === 4 || c === 5) {
+          let cleanVal = val.replace(/[,.]0+$/, "").trim();
+          let unpadded = cleanVal.replace(/^0+/, "") || "0";
+          if (/^-?\d+$/.test(unpadded)) {
+            cell.value = parseInt(unpadded, 10);
+            cell.numFmt = "0";
+            state.appliedCorrections[cellKey] = parseInt(unpadded, 10);
+          } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
+            const num = parseFloat(cleanVal.replace(",", "."));
+            if (!isNaN(num)) {
+              cell.value = num;
+              cell.numFmt = "0.00";
+              state.appliedCorrections[cellKey] = num;
+            } else {
+              cell.value = cleanVal;
+              state.appliedCorrections[cellKey] = cleanVal;
+            }
+          } else {
+            cell.value = cleanVal;
+            state.appliedCorrections[cellKey] = cleanVal;
+          }
         } else {
-          if (/^\d+$/.test(val) && val.length < 10) {
-            cell.value = parseInt(val, 10);
+          // Jede sonstige Spalte (z.B. Mengen, Beträge etc.)
+          let cleanVal = val.replace(",", ".");
+          if (/^-?\d+$/.test(cleanVal) && cleanVal.length < 10) {
+            cell.value = parseInt(cleanVal, 10);
+            state.appliedCorrections[cellKey] = parseInt(cleanVal, 10);
+          } else if (/^-?\d+\.\d+$/.test(cleanVal)) {
+            const num = parseFloat(cleanVal);
+            if (!isNaN(num)) {
+              cell.value = num;
+              cell.numFmt = "0.00";
+              cell.alignment = { horizontal: "right", vertical: "middle" };
+              state.appliedCorrections[cellKey] = num;
+            } else {
+              cell.value = val;
+              state.appliedCorrections[cellKey] = val;
+            }
           } else {
             cell.value = val;
+            state.appliedCorrections[cellKey] = val;
           }
-          state.appliedCorrections[cellKey] = val;
         }
       }
 
@@ -5293,7 +5369,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
       let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
       let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
-      let hoursColIdx = parseInt(selectTsHoursCol?.value, 10) || null;
+      let hoursColIdx = getHoursColIdx();
+      if (!hoursColIdx) {
+        let hVal = parseInt(selectTsHoursCol?.value, 10);
+        if (!isNaN(hVal) && hVal > 0) hoursColIdx = hVal;
+      }
 
       // 1. Spaltenwerte einsammeln
       const rowValues = [];
@@ -5325,6 +5405,9 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (c === hoursColIdx && val) {
           const parsedH = parseFloat(val.replace(",", "."));
           if (!isNaN(parsedH)) val = parsedH;
+        } else if (/^-?\d+[.,]\d+$/.test(val)) {
+          const parsedNum = parseFloat(val.replace(",", "."));
+          if (!isNaN(parsedNum)) val = parsedNum;
         }
 
         rowValues.push(val !== "" ? val : null);
@@ -5403,6 +5486,9 @@ document.addEventListener("DOMContentLoaded", () => {
           }
           cell.alignment = { horizontal: "center", vertical: "middle" };
         } else if (c === hoursColIdx && typeof cell.value === "number") {
+          cell.numFmt = "0.00";
+          cell.alignment = { horizontal: "right", vertical: "middle" };
+        } else if (typeof cell.value === "number" && Math.abs(cell.value % 1) > 0.0001) {
           cell.numFmt = "0.00";
           cell.alignment = { horizontal: "right", vertical: "middle" };
         }
