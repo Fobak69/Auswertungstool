@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.0 GELADEN - 2026-10-12 ***");
+console.log("[APP.JS] *** VERSION 4.3 GELADEN - 2026-10-14 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -39,7 +39,9 @@ document.addEventListener("DOMContentLoaded", () => {
     modalEditRowIdx: null,
     modalPrefill: null,
     modalCaller: "timesheet",
-    highlightEmployeeRes: null
+    highlightEmployeeRes: null,
+    activeDeleteTarget: null, // { id, row, col_idx, cell, origVal }
+    activeDayOverview: null // { resource, dateIso, scope }
   };
 
   // DOM Elemente
@@ -154,6 +156,42 @@ document.addEventListener("DOMContentLoaded", () => {
   const chooseBookingTitle = document.getElementById("choose-booking-title");
   const chooseBookingSubtitle = document.getElementById("choose-booking-subtitle");
   const chooseBookingList = document.getElementById("choose-booking-list");
+
+  // Eintrag / Zeile löschen Modal DOM
+  const modalDeleteEntry = document.getElementById("modal-delete-entry");
+  const deleteModalDesc = document.getElementById("delete-modal-desc");
+  const delModalRowNum = document.getElementById("del-modal-row-num");
+  const delModalCellCoord = document.getElementById("del-modal-cell-coord");
+  const btnConfirmDeleteRow = document.getElementById("btn-confirm-delete-row");
+  const btnConfirmClearCell = document.getElementById("btn-confirm-clear-cell");
+  const btnCloseDeleteModal = document.getElementById("btn-close-delete-modal");
+  const btnCancelDelete = document.getElementById("btn-cancel-delete");
+
+  // Hilfsfunktion: Ermittelt verlässlich die Spalte für Arbeitszeiten / Stunden
+  function getHoursColIdx() {
+    const hoursColVal = selectTsHoursCol?.value;
+    if (hoursColVal && hoursColVal !== "fixed_one") {
+      const idx = parseInt(hoursColVal, 10);
+      if (!isNaN(idx) && idx > 0) return idx;
+    }
+    if (state.targetWorkbook && state.currentTargetSheet) {
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (ws) {
+        const hRow = ws.getRow(1);
+        let found = null;
+        hRow.eachCell((cell, colNum) => {
+          if (!found) {
+            const name = WebExcelEngine.extractCellValue(cell.value, cell).toLowerCase();
+            if (name.includes("stunde") || name.includes("zeit") || name.includes("dauer") || name.includes("ist-stunden") || name.includes("menge") || name.includes("std") || name === "h") {
+              found = colNum;
+            }
+          }
+        });
+        if (found) return found;
+      }
+    }
+    return null;
+  }
 
   // --- IndexedDB Speicher für die Referenzdatei ---
   const IDB_NAME = "ExcelPrueferStorage";
@@ -2032,6 +2070,151 @@ document.addEventListener("DOMContentLoaded", () => {
     applySingleCorrection(targetItem.id, val);
   }
 
+  // --- Eintrag / Zeile löschen Dialog & Aktionen ---
+  function openDeleteEntryModal(target) {
+    if (!target) return;
+    const isNum = (typeof target === "number");
+    const rowIdx = isNum ? target : target.row;
+    const targetItem = isNum ? { row: rowIdx, cell: `Zeile ${rowIdx}`, col_name: "Ganze Zeile", original_value: "" } : target;
+    state.activeDeleteTarget = targetItem;
+
+    if (delModalRowNum) delModalRowNum.textContent = rowIdx;
+    if (delModalCellCoord) delModalCellCoord.textContent = targetItem.col_name ? `${targetItem.cell} (${targetItem.col_name})` : `Zeile ${rowIdx}`;
+    if (deleteModalDesc) {
+      if (isNum || !target.col_idx) {
+        deleteModalDesc.innerHTML = `Möchten Sie <strong>Zeile ${rowIdx}</strong> komplett aus der Prüfdatei und allen Übersichten entfernen?`;
+        if (btnConfirmClearCell) btnConfirmClearCell.style.display = "none";
+      } else {
+        const orig = targetItem.original_value || "leer";
+        const curr = targetItem.current_value;
+        let valText = (curr && curr !== orig) ? `Wert '${curr}' (ursprünglich '${orig}')` : `Wert '${orig}'`;
+        deleteModalDesc.innerHTML = `Fehlerhafter Eintrag in <strong>Zelle ${targetItem.cell}</strong> (Zeile ${targetItem.row}, Spalte <em>${escapeHtml(targetItem.col_name)}</em>, ${escapeHtml(valText)}).<br><br>Wie möchten Sie diese falsche Eingabe entfernen?`;
+        if (btnConfirmClearCell) btnConfirmClearCell.style.display = "flex";
+      }
+    }
+
+    if (modalDeleteEntry) {
+      modalDeleteEntry.classList.remove("hidden");
+    }
+  }
+
+  function closeDeleteEntryModal() {
+    if (modalDeleteEntry) {
+      modalDeleteEntry.classList.add("hidden");
+    }
+    state.activeDeleteTarget = null;
+  }
+
+  function deleteExcelRow(rowIdx) {
+    try {
+      if (!state.targetWorkbook || !state.currentTargetSheet) {
+        alert("Keine Prüfdatei geöffnet.");
+        return;
+      }
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (!ws) return;
+
+      const totalBefore = Math.max(ws.rowCount || 0, ws.actualRowCount || 0);
+      if (rowIdx < 2 || rowIdx > totalBefore) {
+        alert(`Ungültige Zeilennummer: ${rowIdx}`);
+        return;
+      }
+
+      // 1. Zeile aus Arbeitsblatt entfernen
+      ws.spliceRows(rowIdx, 1);
+
+      // 2. state.appliedCorrections anpassen (Zeilen > rowIdx verschieben sich um -1)
+      const updatedCorrections = {};
+      for (const [key, val] of Object.entries(state.appliedCorrections || {})) {
+        const parts = key.split("_");
+        const r = parseInt(parts[0], 10);
+        const c = parseInt(parts[1], 10);
+        if (r === rowIdx) {
+          // Zeile wurde gelöscht -> verwerfen
+          continue;
+        } else if (r > rowIdx) {
+          updatedCorrections[`${r - 1}_${c}`] = val;
+        } else {
+          updatedCorrections[key] = val;
+        }
+      }
+      state.appliedCorrections = updatedCorrections;
+
+      // 3. Neu analysieren & Oberflächen synchronisieren
+      runInspection({ skipScroll: true, skipToast: true });
+      renderResultsTable();
+      if (state.timesheetData) renderTimesheetMatrix();
+      populateFullTableFilters();
+      renderFullExcelTable();
+
+      // Wenn Tagesübersicht aktiv war: aktualisieren
+      if (state.activeDayOverview) {
+        openDayOverviewModal(state.activeDayOverview.resource, state.activeDayOverview.dateIso, state.activeDayOverview.scope);
+      }
+
+      showToast(`🗑️ Zeile ${rowIdx} wurde komplett aus der Prüfdatei gelöscht.`);
+    } catch (err) {
+      console.error("Fehler beim Löschen der Zeile:", err);
+      alert("Fehler beim Löschen der Zeile: " + err.message);
+    }
+  }
+
+  function clearCellValue(rowIdx, colIdx, cellId) {
+    try {
+      if (!state.targetWorkbook || !state.currentTargetSheet) return;
+      const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
+      if (!ws) return;
+
+      const cell = ws.getRow(rowIdx).getCell(colIdx);
+      cell.value = null;
+
+      // In appliedCorrections als leer eintragen
+      state.appliedCorrections[cellId] = "";
+
+      const resItem = state.allResults ? state.allResults.find(r => r.id === cellId) : null;
+      if (resItem) {
+        resItem.current_value = "";
+        resItem.is_corrected = true;
+      }
+
+      runInspection({ skipScroll: true, skipToast: true });
+      renderResultsTable();
+      if (state.timesheetData) renderTimesheetMatrix();
+      populateFullTableFilters();
+      renderFullExcelTable();
+
+      showToast(`🧹 Zelle ${getColLetter(colIdx)}${rowIdx} wurde auf leer gesetzt.`);
+    } catch (err) {
+      console.error("Fehler beim Leeren der Zelle:", err);
+      alert("Fehler beim Leeren der Zelle: " + err.message);
+    }
+  }
+
+  if (btnCloseDeleteModal) {
+    btnCloseDeleteModal.addEventListener("click", closeDeleteEntryModal);
+  }
+  if (btnCancelDelete) {
+    btnCancelDelete.addEventListener("click", closeDeleteEntryModal);
+  }
+  if (btnConfirmDeleteRow) {
+    btnConfirmDeleteRow.addEventListener("click", () => {
+      const target = state.activeDeleteTarget;
+      closeDeleteEntryModal();
+      if (target && target.row) {
+        deleteExcelRow(target.row);
+      }
+    });
+  }
+  if (btnConfirmClearCell) {
+    btnConfirmClearCell.addEventListener("click", () => {
+      const target = state.activeDeleteTarget;
+      closeDeleteEntryModal();
+      if (target && target.row && target.col_idx) {
+        clearCellValue(target.row, target.col_idx, target.id);
+      }
+    });
+  }
+
   // --- Ergebnistabelle Rendern ---
   function renderResultsTable() {
     const query = state.searchQuery;
@@ -2118,6 +2301,7 @@ document.addEventListener("DOMContentLoaded", () => {
               placeholder="Nummer eintragen..."
               title="Nummer manuell anpassen und Enter drücken">
             <button class="btn-save-manual" data-id="${r.id}" title="Händisch speichern">💾 Speichern</button>
+            <button type="button" class="btn-delete-entry" data-id="${r.id}" title="Diesen fehlerhaften Eintrag / Zeile löschen">🗑️ Löschen</button>
           </div>
           ${isRefCandidate ? `
             <label class="cb-ref-label" title="Diesen Wert zusätzlich dauerhaft in die Referenzdatei (${escapeHtml(refColDisp)}) schreiben, sodass er sofort als gültig anerkannt wird">
@@ -2203,6 +2387,19 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     });
 
+    // Event Listener für Eintrag / Zeile löschen
+    resultsTbody.querySelectorAll(".btn-delete-entry").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        const targetItem = state.allResults ? state.allResults.find(r => r.id === id) : null;
+        if (targetItem) {
+          openDeleteEntryModal(targetItem);
+        }
+      });
+    });
+
+    const hoursColIdx = getHoursColIdx();
+
     resultsTbody.querySelectorAll(".manual-input").forEach(input => {
       const handleInputLive = () => {
         const id = input.dataset.id;
@@ -2235,10 +2432,32 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else if (/^\d{1,4}$/.test(val) && (targetItem.col_idx === 3 || (targetItem.col_letter && targetItem.col_letter.toUpperCase() === "C"))) {
                   cell.value = WebExcelEngine.padNumber(val, 4);
                   cell.numFmt = "0000";
+                } else if (hoursColIdx && targetItem.col_idx === hoursColIdx) {
+                  const cleanVal = val.replace(",", ".");
+                  const num = parseFloat(cleanVal);
+                  if (!isNaN(num)) {
+                    cell.value = num;
+                    cell.numFmt = "0.00";
+                  } else {
+                    cell.value = val;
+                  }
                 } else if (targetItem.col_idx === 4 || targetItem.col_idx === 5) {
-                  let unpadded = val.replace(/^0+/, "") || "0";
-                  cell.value = parseInt(unpadded, 10);
-                  cell.numFmt = "0";
+                  let cleanVal = val.replace(/[,.]0+$/, "").trim();
+                  let unpadded = cleanVal.replace(/^0+/, "") || "0";
+                  if (/^-?\d+$/.test(unpadded)) {
+                    cell.value = parseInt(unpadded, 10);
+                    cell.numFmt = "0";
+                  } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
+                    const num = parseFloat(cleanVal.replace(",", "."));
+                    if (!isNaN(num)) {
+                      cell.value = num;
+                      cell.numFmt = "0.00";
+                    } else {
+                      cell.value = cleanVal;
+                    }
+                  } else {
+                    cell.value = cleanVal;
+                  }
                 } else if (/^\d+$/.test(val)) {
                   cell.value = parseInt(val, 10);
                 } else if (/^-?\d+(\.\d+)?$/.test(val.replace(",", "."))) {
@@ -2278,6 +2497,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const origVal = targetItem.original_value;
     const colIdx = targetItem.col_idx;
     let count = 0;
+    const hoursColIdx = getHoursColIdx();
 
     let tgtWs = null;
     if (state.targetWorkbook && state.currentTargetSheet) {
@@ -2304,10 +2524,32 @@ document.addEventListener("DOMContentLoaded", () => {
           } else if (/^\d{1,4}$/.test(valStr) && (r.col_idx === 3 || (targetItem.col_letter && targetItem.col_letter.toUpperCase() === "C"))) {
             cell.value = WebExcelEngine.padNumber(valStr, 4);
             cell.numFmt = "0000";
+          } else if (hoursColIdx && r.col_idx === hoursColIdx) {
+            const cleanVal = valStr.replace(",", ".");
+            const num = parseFloat(cleanVal);
+            if (!isNaN(num)) {
+              cell.value = num;
+              cell.numFmt = "0.00";
+            } else {
+              cell.value = valStr;
+            }
           } else if (r.col_idx === 4 || r.col_idx === 5) {
-            let unpadded = valStr.replace(/^0+/, "") || "0";
-            cell.value = parseInt(unpadded, 10);
-            cell.numFmt = "0";
+            let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
+            let unpadded = cleanVal.replace(/^0+/, "") || "0";
+            if (/^-?\d+$/.test(unpadded)) {
+              cell.value = parseInt(unpadded, 10);
+              cell.numFmt = "0";
+            } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
+              const num = parseFloat(cleanVal.replace(",", "."));
+              if (!isNaN(num)) {
+                cell.value = num;
+                cell.numFmt = "0.00";
+              } else {
+                cell.value = cleanVal;
+              }
+            } else {
+              cell.value = cleanVal;
+            }
           } else if (/^\d+$/.test(valStr) && valStr.length < 10) {
             cell.value = parseInt(valStr, 10);
           } else if (/^-?\d+(\.\d+)?$/.test(valStr.replace(",", "."))) {
@@ -2503,6 +2745,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
     let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+    let hoursColIdx = getHoursColIdx();
     let orderColIdx = parseInt(document.getElementById("select-ts-order-col")?.value, 10) || 4;
 
     // Helper: Schreibt einen Wert mit korrekter Formatierung in eine Zelle
@@ -2536,6 +2779,17 @@ document.addEventListener("DOMContentLoaded", () => {
           cell.value = cleanRes;
           cell.numFmt = "0000";
         }
+      } else if (hoursColIdx && colNum === hoursColIdx) {
+        // Arbeitszeit / Stunden-Spalte: Zahl mit ZWEI Dezimalstellen (z.B. 0,25 oder 1,50)
+        let cleanVal = valStr.replace(",", ".");
+        let num = parseFloat(cleanVal);
+        if (!isNaN(num)) {
+          cell.value = num;
+          cell.numFmt = "0.00";
+        } else {
+          cell.value = valStr;
+          cell.numFmt = "0.00";
+        }
       } else if (colNum === 4 || colNum === 5) {
         // Spalte D & Spalte E: Einfache Zahlen OHNE führende Null (z.B. 8 statt 0008)
         let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
@@ -2544,9 +2798,15 @@ document.addEventListener("DOMContentLoaded", () => {
           cell.value = parseInt(unpadded, 10);
           cell.numFmt = "0";
         } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
-          const num = Math.round(parseFloat(cleanVal.replace(",", ".")));
-          cell.value = num;
-          cell.numFmt = "0";
+          // Falls Dezimalzahl in Spalte D/E, NIEMALS runden!
+          const num = parseFloat(cleanVal.replace(",", "."));
+          if (!isNaN(num)) {
+            cell.value = num;
+            cell.numFmt = "0.00";
+          } else {
+            cell.value = cleanVal;
+            cell.numFmt = "0";
+          }
         } else {
           cell.value = cleanVal;
           cell.numFmt = "0";
@@ -2597,7 +2857,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    // 4. Spalten-Formatierungen setzen (Datum DD.MM.YYYY, Ressource 0000 in C, Spalte D & E ganze Zahlen)
+    // 4. Spalten-Formatierungen setzen (Datum DD.MM.YYYY, Ressource 0000 in C, Spalte D & E ganze Zahlen, Stunden mit 2 Dezimalstellen)
     const maxCols = Math.max(ws.columnCount || 0, ws.actualRowCount ? ws.actualColumnCount || 0 : 0, 10);
     const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length : 0));
 
@@ -2605,7 +2865,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const col = ws.getColumn(colIdx);
       const isDateCol = (colIdx === dateColIdx || colIdx === 1);
       const isResCol = (colIdx === 3); // EXKLUSIV Spalte C!
-      const isSimpleNumCol = (colIdx === 4 || colIdx === 5); // Spalte D und Spalte E!
+      const isHoursCol = (hoursColIdx && colIdx === hoursColIdx);
+      const isSimpleNumCol = (!isHoursCol && (colIdx === 4 || colIdx === 5)); // Spalte D und Spalte E (nur falls nicht Stunden)!
 
       if (isDateCol) {
         col.numFmt = "DD.MM.YYYY";
@@ -2630,12 +2891,26 @@ document.addEventListener("DOMContentLoaded", () => {
             }
           }
         }
+      } else if (isHoursCol) {
+        // Arbeitszeit / Stunden-Spalte: Zahl mit 2 Dezimalstellen formatieren (0.00 -> 0,25 oder 1,50)
+        col.numFmt = "0.00";
+        for (let r = 2; r <= maxRows; r++) {
+          const cell = ws.getRow(r).getCell(colIdx);
+          cell.numFmt = "0.00";
+          if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
+            const rawVal = WebExcelEngine.extractCellValue(cell.value, cell);
+            let s = String(rawVal).trim().replace(",", ".");
+            const num = parseFloat(s);
+            if (!isNaN(num)) {
+              cell.value = num;
+            }
+          }
+        }
       } else if (isSimpleNumCol) {
         // Spalte D und Spalte E: Einfache Zahlen OHNE führende Nullen
         col.numFmt = "0";
         for (let r = 2; r <= maxRows; r++) {
           const cell = ws.getRow(r).getCell(colIdx);
-          cell.numFmt = "0";
           if (cell.value !== null && cell.value !== undefined && cell.value !== "") {
             const rawVal = WebExcelEngine.extractCellValue(cell.value, cell);
             let s = String(rawVal).trim().replace(",", ".");
@@ -2643,9 +2918,13 @@ document.addEventListener("DOMContentLoaded", () => {
             let unpadded = s.replace(/^0+/, "") || "0";
             if (/^-?\d+$/.test(unpadded)) {
               cell.value = parseInt(unpadded, 10); // Wandelt "0008" oder "08" garantiert in 8 um!
+              cell.numFmt = "0";
             } else if (/^-?\d+\.\d+$/.test(s)) {
-              const num = Math.round(parseFloat(s));
-              if (!isNaN(num)) cell.value = num;
+              const num = parseFloat(s);
+              if (!isNaN(num)) {
+                cell.value = num;
+                cell.numFmt = "0.00";
+              }
             }
           }
         }
@@ -2978,8 +3257,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function formatHoursDe(hours) {
-    if (hours === 0) return "0,0";
-    return Number(hours).toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 2 });
+    if (hours === 0 || !hours) return "0,00";
+    return Number(hours).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
   function renderTimesheetMatrix() {
@@ -3052,22 +3331,46 @@ document.addEventListener("DOMContentLoaded", () => {
       const empName = empNameFromMap || `Ressource ${displayRes}`;
       const hasCustomName = Boolean(empNameFromMap);
 
-      // 2. Datum ermitteln
+      // 2. Datum ermitteln (inklusive etwaiger Benutzer-Korrekturen)
       let dateObj = null;
       if (dateColIdx) {
-        const cell = row.getCell(dateColIdx);
-        dateObj = parseRowDate(cell.value, cell);
+        const cellKeyDate = `${r}_${dateColIdx}`;
+        const corrDate = state.appliedCorrections ? state.appliedCorrections[cellKeyDate] : undefined;
+        if (corrDate !== undefined) {
+          const pd = WebExcelEngine.parseDateValue(corrDate);
+          if (pd) {
+            const pad2 = (n) => String(n).padStart(2, "0");
+            const yyyy = pd.getFullYear();
+            const mm = pad2(pd.getMonth() + 1);
+            const dd = pad2(pd.getDate());
+            const isoKey = `${yyyy}-${mm}-${dd}`;
+            const displayDate = `${dd}.${mm}.${yyyy}`;
+            const WEEKDAYS = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+            const weekday = WEEKDAYS[pd.getDay()] || "";
+            const label = weekday ? `${weekday}, ${dd}.${mm}.` : displayDate;
+            dateObj = { isoKey, displayDate, weekday, label };
+          } else {
+            const cleanD = String(corrDate).trim();
+            dateObj = { isoKey: cleanD, displayDate: cleanD, weekday: "", label: cleanD };
+          }
+        } else {
+          const cell = row.getCell(dateColIdx);
+          dateObj = parseRowDate(cell.value, cell);
+        }
       } else {
         dateObj = { isoKey: "gesamt", displayDate: "Gesamtzeit", weekday: "", label: "Gesamtzeit" };
       }
 
-      // 3. Stunden ermitteln
+      // 3. Stunden ermitteln (inklusive etwaiger Benutzer-Korrekturen)
       let hours = 0;
       if (isFixedHours) {
         hours = 1;
       } else if (hoursColIdx) {
-        const cell = row.getCell(hoursColIdx);
-        hours = parseHours(cell.value);
+        const cellKeyHours = `${r}_${hoursColIdx}`;
+        const hVal = (state.appliedCorrections && state.appliedCorrections[cellKeyHours] !== undefined)
+          ? state.appliedCorrections[cellKeyHours]
+          : row.getCell(hoursColIdx).value;
+        hours = parseHours(hVal);
       } else {
         hours = 1;
       }
@@ -3163,7 +3466,7 @@ document.addEventListener("DOMContentLoaded", () => {
     timesheetThead.innerHTML = `
       <tr>
         <th class="ts-col-emp">Mitarbeiter / Ressource</th>
-        ${sortedDates.map(d => `<th title="${escapeHtml(d.displayDate)}">${escapeHtml(d.label)}</th>`).join("")}
+        ${sortedDates.map(d => `<th class="ts-date-header-clickable" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="📅 Klicken, um die gesamte Tagesübersicht am ${escapeHtml(d.displayDate)} für alle Mitarbeiter anzuzeigen">${escapeHtml(d.label)}</th>`).join("")}
         <th class="ts-col-total">Gesamtstunden</th>
         <th>Buchungen</th>
       </tr>
@@ -3174,9 +3477,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const dateCells = sortedDates.map(d => {
         const h = emp.hoursByDate[d.isoKey] || 0;
         if (h > 0) {
-          return `<td><span class="ts-hour-badge ts-hour-clickable" data-res="${escapeHtml(emp.resource)}" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="✏️ Klicken, um Buchung (${formatHoursDe(h)} Std) von ${escapeHtml(emp.name)} am ${escapeHtml(d.displayDate)} zu bearbeiten oder neu einzutragen">${formatHoursDe(h)}</span></td>`;
+          return `<td><span class="ts-hour-badge ts-hour-clickable" data-res="${escapeHtml(emp.resource)}" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="📅 Klicken, um alle Buchungen (${formatHoursDe(h)} Std) von ${escapeHtml(emp.name)} am ${escapeHtml(d.displayDate)} im Detail anzuzeigen & zu bearbeiten">${formatHoursDe(h)}</span></td>`;
         } else {
-          return `<td><span class="ts-hour-empty-clickable" data-res="${escapeHtml(emp.resource)}" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="➕ Klicken, um neue Buchung für ${escapeHtml(emp.name)} am ${escapeHtml(d.displayDate)} einzutragen">-</span></td>`;
+          return `<td><span class="ts-hour-empty-clickable" data-res="${escapeHtml(emp.resource)}" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="📅 Klicken, um Buchungen für ${escapeHtml(emp.name)} am ${escapeHtml(d.displayDate)} anzuzeigen oder neu einzutragen">-</span></td>`;
         }
       }).join("");
 
@@ -3211,7 +3514,7 @@ document.addEventListener("DOMContentLoaded", () => {
     timesheetTfoot.innerHTML = `
       <tr>
         <td class="ts-cell-emp"><strong>Gesamtsumme Tag:</strong></td>
-        ${sortedDates.map(d => `<td><strong>${formatHoursDe(d.totalHours)} h</strong></td>`).join("")}
+        ${sortedDates.map(d => `<td class="ts-total-day-clickable" data-date="${escapeHtml(d.isoKey)}" data-display-date="${escapeHtml(d.displayDate)}" title="📅 Klicken, um die gesamte Tagesübersicht am ${escapeHtml(d.displayDate)} (${formatHoursDe(d.totalHours)} h) für alle Mitarbeiter anzuzeigen"><strong>${formatHoursDe(d.totalHours)} h</strong></td>`).join("")}
         <td class="ts-cell-total"><span class="ts-grand-total">${formatHoursDe(grandTotalHours)} h</span></td>
         <td><strong>${grandTotalEntries}</strong></td>
       </tr>
@@ -3219,33 +3522,45 @@ document.addEventListener("DOMContentLoaded", () => {
 
     timesheetSection.classList.remove("hidden");
 
-    // Event Listener für interaktiven Klick auf ZAHLEN (Bearbeiten / Wählen)
+    // Event Listener für Klick auf ZAHLEN (Tagesübersicht für diesen Mitarbeiter öffnen)
     timesheetTbody.querySelectorAll(".ts-hour-clickable").forEach(el => {
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         state.modalCaller = "timesheet";
         const res = el.dataset.res;
         const dateIso = el.dataset.date;
-        const matchingRows = findRowsForResourceAndDate(res, dateIso);
-
-        if (matchingRows.length === 1) {
-          openEditRowModal(matchingRows[0].rowIdx);
-        } else if (matchingRows.length > 1) {
-          openChooseBookingModal(res, dateIso, matchingRows);
-        } else {
-          openInsertRowModal(null, { res: res, dateIso: dateIso });
-        }
+        openDayOverviewModal(res, dateIso, "employee");
       });
     });
 
-    // Event Listener für interaktiven Klick auf FREIFELDER (Neue Zeile nachtragen)
+    // Event Listener für Klick auf FREIFELDER (Tagesübersicht für diesen Mitarbeiter öffnen)
     timesheetTbody.querySelectorAll(".ts-hour-empty-clickable").forEach(el => {
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         state.modalCaller = "timesheet";
         const res = el.dataset.res;
         const dateIso = el.dataset.date;
-        openInsertRowModal(null, { res: res, dateIso: dateIso });
+        openDayOverviewModal(res, dateIso, "employee");
+      });
+    });
+
+    // Event Listener für Klick auf Datums-Spaltenkopf (Tagesübersicht für alle Mitarbeiter am Tag)
+    timesheetThead.querySelectorAll(".ts-date-header-clickable").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.modalCaller = "timesheet";
+        const dateIso = el.dataset.date;
+        openDayOverviewModal("all", dateIso, "all");
+      });
+    });
+
+    // Event Listener für Klick auf Tagessumme (Tagesübersicht für alle Mitarbeiter am Tag)
+    timesheetTfoot.querySelectorAll(".ts-total-day-clickable").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.modalCaller = "timesheet";
+        const dateIso = el.dataset.date;
+        openDayOverviewModal("all", dateIso, "all");
       });
     });
 
@@ -3325,13 +3640,13 @@ document.addEventListener("DOMContentLoaded", () => {
       // Datumsspalten formatieren
       for (let c = 3; c < 3 + sortedDates.length; c++) {
         const cell = row.getCell(c);
-        cell.numFmt = '#,##0.0 "h"';
+        cell.numFmt = '#,##0.00 "h"';
         cell.alignment = { horizontal: "right", vertical: "middle" };
       }
 
       // Gesamtstunden
       const totalCell = row.getCell(3 + sortedDates.length);
-      totalCell.numFmt = '#,##0.0 "h"';
+      totalCell.numFmt = '#,##0.00 "h"';
       totalCell.font = { bold: true };
       totalCell.alignment = { horizontal: "right", vertical: "middle" };
       totalCell.fill = {
@@ -3380,7 +3695,7 @@ document.addEventListener("DOMContentLoaded", () => {
       };
 
       if (colNum >= 3 && colNum <= 3 + sortedDates.length) {
-        cell.numFmt = '#,##0.0 "h"';
+        cell.numFmt = '#,##0.00 "h"';
         cell.alignment = { horizontal: "right", vertical: "middle" };
       } else if (colNum === 4 + sortedDates.length) {
         cell.numFmt = '0';
@@ -3875,13 +4190,55 @@ document.addEventListener("DOMContentLoaded", () => {
     if (ws) {
       const cell = ws.getRow(rowIdx).getCell(colIdx);
       const valStr = String(newVal).trim();
-      if (colIdx === 1) {
+      const hoursColIdx = getHoursColIdx();
+      const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+      const dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+
+      if (valStr === "") {
+        cell.value = null;
+      } else if (colIdx === dateColIdx || colIdx === 1) {
         cell.value = valStr;
         cell.numFmt = "DD.MM.YYYY";
-      } else if (/^\d+$/.test(valStr)) {
+      } else if (colIdx === resColIdx || colIdx === 3) {
+        let cleanRes = valStr.replace(/[,.]0+$/, "").trim();
+        if (/^\d{1,4}$/.test(cleanRes)) {
+          cleanRes = WebExcelEngine.padNumber(cleanRes, 4);
+          cell.numFmt = "0000";
+        }
+        cell.value = cleanRes;
+        state.appliedCorrections[cellKey] = cleanRes;
+      } else if (hoursColIdx && colIdx === hoursColIdx) {
+        const cleanVal = valStr.replace(",", ".");
+        const num = parseFloat(cleanVal);
+        if (!isNaN(num)) {
+          cell.value = num;
+          cell.numFmt = "0.00";
+          state.appliedCorrections[cellKey] = num;
+        } else {
+          cell.value = valStr;
+        }
+      } else if (colIdx === 4 || colIdx === 5) {
+        let cleanVal = valStr.replace(/[,.]0+$/, "").trim();
+        let unpadded = cleanVal.replace(/^0+/, "") || "0";
+        if (/^-?\d+$/.test(unpadded)) {
+          cell.value = parseInt(unpadded, 10);
+          cell.numFmt = "0";
+        } else if (/^-?\d+([.,]\d+)?$/.test(cleanVal)) {
+          const num = parseFloat(cleanVal.replace(",", "."));
+          if (!isNaN(num)) {
+            cell.value = num;
+            cell.numFmt = "0.00";
+          } else {
+            cell.value = cleanVal;
+          }
+        } else {
+          cell.value = cleanVal;
+        }
+      } else if (/^\d+$/.test(valStr) && valStr.length < 10) {
         cell.value = parseInt(valStr, 10);
-      } else if (/^-?\d+\.\d+$/.test(valStr.replace(",", "."))) {
-        cell.value = parseFloat(valStr.replace(",", "."));
+      } else if (/^-?\d+(\.\d+)?$/.test(valStr.replace(",", "."))) {
+        const num = parseFloat(valStr.replace(",", "."));
+        cell.value = isNaN(num) ? valStr : num;
       } else {
         cell.value = valStr;
       }
@@ -3973,6 +4330,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function closeChooseBookingModal() {
     if (modalChooseBooking) modalChooseBooking.classList.add("hidden");
+    state.activeDayOverview = null;
   }
 
   // Hilfsfunktion: Ressourcennummer im Dropdown oder als manuelle Nummer sicher einstellen
@@ -4010,7 +4368,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Findet alle Zeilen in der Excel-Tabelle für einen bestimmten Mitarbeiter und ein Datum
+  // Findet alle Zeilen in der Excel-Tabelle für einen bestimmten Mitarbeiter (oder "all") und ein Datum
   function findRowsForResourceAndDate(resource, dateIso) {
     if (!state.targetWorkbook || !state.currentTargetSheet) return [];
     const ws = state.targetWorkbook.getWorksheet(state.currentTargetSheet);
@@ -4022,8 +4380,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let resColIdx = parseInt(selectTsResourceCol?.value, 10);
     if (isNaN(resColIdx) || resColIdx < 1) resColIdx = 3;
 
-    let hoursColIdx = parseInt(selectTsHoursCol?.value, 10);
-    if (isNaN(hoursColIdx) || hoursColIdx < 1) hoursColIdx = null;
+    let hoursColIdx = getHoursColIdx();
 
     let colCount = 0;
     const headerRow = ws.getRow(1);
@@ -4034,8 +4391,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (colCount === 0 && ws.actualColumnCount) colCount = ws.actualColumnCount;
     if (colCount === 0) colCount = 10;
 
-    const cleanRes = String(resource || "").replace(/[,.]0+$/, "").trim();
-    const cleanNum = /^\d+$/.test(cleanRes) ? parseInt(cleanRes, 10) : null;
+    const isAllStaff = (!resource || resource === "all");
+    const cleanRes = (!isAllStaff) ? String(resource || "").replace(/[,.]0+$/, "").trim() : "";
+    const cleanNum = (!isAllStaff && /^\d+$/.test(cleanRes)) ? parseInt(cleanRes, 10) : null;
+    const targetEmpName = (!isAllStaff) ? (getStaffName(cleanRes) || cleanRes) : "";
 
     const maxRows = Math.max(ws.rowCount || 0, ws.actualRowCount || 0, (ws._rows ? ws._rows.length - 1 : 0));
     const matches = [];
@@ -4050,15 +4409,21 @@ document.addEventListener("DOMContentLoaded", () => {
       // 1. Ressource prüfen
       const cellKeyRes = `${r}_${resColIdx}`;
       let rRes = (state.appliedCorrections && state.appliedCorrections[cellKeyRes] !== undefined)
-        ? String(state.appliedCorrections[cellKeyRes]).trim()
-        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).trim();
+        ? String(state.appliedCorrections[cellKeyRes]).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim()
+        : WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx)).replace(/\u00a0/g, " ").replace(/^['"`\s]+|['"`\s]+$/g, "").trim();
       rRes = rRes.replace(/[,.]0+$/, "").trim();
 
-      let resMatches = (rRes === cleanRes);
-      if (!resMatches && cleanNum !== null && /^\d+$/.test(rRes)) {
-        resMatches = (parseInt(rRes, 10) === cleanNum);
+      const rNum = /^\d+$/.test(rRes) ? parseInt(rRes, 10) : null;
+      const rEmpName = getStaffName(rRes);
+
+      if (!isAllStaff) {
+        let resMatches = false;
+        if (rRes === cleanRes) resMatches = true;
+        if (!resMatches && cleanNum !== null && rNum !== null && cleanNum === rNum) resMatches = true;
+        if (!resMatches && targetEmpName && rEmpName && targetEmpName.toLowerCase() === rEmpName.toLowerCase()) resMatches = true;
+        if (!resMatches && targetEmpName && rRes && targetEmpName.toLowerCase() === rRes.toLowerCase()) resMatches = true;
+        if (!resMatches) continue;
       }
-      if (!resMatches) continue;
 
       // 2. Datum prüfen
       let rDateIso = "";
@@ -4066,26 +4431,35 @@ document.addEventListener("DOMContentLoaded", () => {
       if (dateColIdx) {
         const cell = row.getCell(dateColIdx);
         const cellKeyDate = `${r}_${dateColIdx}`;
-        const corrVal = state.appliedCorrections ? state.appliedCorrections[cellKeyDate] : undefined;
-        if (corrVal !== undefined) {
-          const pd = WebExcelEngine.parseDateValue(corrVal);
-          if (pd) {
-            rDateIso = pd.toISOString().split("T")[0];
-            rDateDisp = WebExcelEngine.formatDate(pd);
-          } else {
-            rDateIso = String(corrVal);
-            rDateDisp = String(corrVal);
-          }
-        } else {
-          const dObj = parseRowDate(cell.value, cell);
-          if (dObj) {
-            rDateIso = dObj.isoKey;
-            rDateDisp = dObj.displayDate;
-          }
+        const rawDateVal = (state.appliedCorrections && state.appliedCorrections[cellKeyDate] !== undefined)
+          ? state.appliedCorrections[cellKeyDate]
+          : cell.value;
+        const dObj = parseRowDate(rawDateVal, cell);
+        if (dObj) {
+          rDateIso = dObj.isoKey;
+          rDateDisp = dObj.displayDate;
         }
+      } else {
+        rDateIso = "gesamt";
+        rDateDisp = "Gesamtzeit";
       }
 
-      if (dateIso && rDateIso !== dateIso) continue;
+      if (dateIso) {
+        const targetDate = String(dateIso).trim();
+        let dateMatches = (rDateIso === targetDate || rDateDisp === targetDate);
+        if (!dateMatches) {
+          const partsIso = targetDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (partsIso && rDateDisp === `${partsIso[3]}.${partsIso[2]}.${partsIso[1]}`) {
+            dateMatches = true;
+          }
+          const partsDe = targetDate.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+          if (partsDe) {
+            const pIso = `${partsDe[3]}-${String(partsDe[2]).padStart(2, "0")}-${String(partsDe[1]).padStart(2, "0")}`;
+            if (rDateIso === pIso) dateMatches = true;
+          }
+        }
+        if (!dateMatches) continue;
+      }
 
       // 3. Stunden
       let rHours = 0;
@@ -4099,7 +4473,7 @@ document.addEventListener("DOMContentLoaded", () => {
         rHours = 1;
       }
 
-      // 4. Weitere Infos (z. B. Auftrag, Tätigkeit)
+      // 4. Weitere Infos für Spalten sammeln
       let infoParts = [];
       for (let c = 1; c <= colCount; c++) {
         if (c !== dateColIdx && c !== resColIdx && c !== hoursColIdx) {
@@ -4111,76 +4485,225 @@ document.addEventListener("DOMContentLoaded", () => {
           if (val) {
             const hCell = headerRow.getCell(c);
             const hName = WebExcelEngine.extractCellValue(hCell.value, hCell) || `Spalte ${getColLetter(c)}`;
-            infoParts.push(`${hName}: ${val}`);
-            if (infoParts.length >= 2) break;
+            infoParts.push(`<span style="background: #f1f5f9; padding: 1px 6px; border-radius: 4px; border: 1px solid #e2e8f0; display: inline-block; margin: 1px 2px;"><strong style="color: #475569;">${escapeHtml(hName)}:</strong> ${escapeHtml(val)}</span>`);
           }
         }
       }
 
+      const paddedRes = (/^\d+$/.test(rRes) && rRes.length < 4) ? WebExcelEngine.padNumber(rRes, 4) : rRes;
+      const displayEmpName = rEmpName || (rRes ? `Ressource ${paddedRes}` : "");
+
       matches.push({
         rowIdx: r,
         resource: rRes,
+        resourcePadded: paddedRes,
+        employeeName: displayEmpName,
         dateIso: rDateIso,
         dateDisp: rDateDisp || dateIso,
         hours: rHours,
-        info: infoParts.join(" • ")
+        hoursFormatted: formatHoursDe(rHours),
+        info: infoParts.join(" ")
       });
     }
 
     return matches;
   }
 
-  // Öffnet den Auswahldialog, wenn für einen Tag mehrere Buchungen existieren
-  function openChooseBookingModal(resource, dateIso, matches) {
+  // Öffnet die vollständige Tagesübersicht mit allen Buchungen dieses Tages
+  function openDayOverviewModal(resource, dateIso, initialScope) {
     if (!modalChooseBooking || !chooseBookingList) return;
 
-    const empName = getStaffName(resource) || `Ressource ${resource}`;
-    const dDisp = (matches[0] && matches[0].dateDisp) ? matches[0].dateDisp : (dateIso ? formatDateIsoDe(dateIso) : "");
+    const isAllStaffInitial = (resource === "all" || !resource || initialScope === "all");
+    const currentScope = isAllStaffInitial ? "all" : "employee";
+
+    state.activeDayOverview = { resource, dateIso, scope: currentScope };
+
+    // Alle Buchungen des Tages für diesen Mitarbeiter
+    const empMatches = (!isAllStaffInitial && resource) ? findRowsForResourceAndDate(resource, dateIso) : [];
+    // Alle Buchungen des Tages für alle Mitarbeiter
+    const allMatches = findRowsForResourceAndDate("all", dateIso);
+
+    const matchesToDisplay = (currentScope === "all") ? allMatches : empMatches;
+
+    const empName = (!isAllStaffInitial && resource) ? (getStaffName(resource) || `Ressource ${resource}`) : "Alle Mitarbeiter";
+    const dDisp = (allMatches[0] && allMatches[0].dateDisp) ? allMatches[0].dateDisp : (dateIso ? formatDateIsoDe(dateIso) : "Tag");
 
     if (chooseBookingTitle) {
-      chooseBookingTitle.textContent = `Buchungen: ${empName}`;
+      chooseBookingTitle.textContent = (currentScope === "all")
+        ? `Tagesübersicht aller Mitarbeiter am ${dDisp}`
+        : `Tagesübersicht: ${empName} am ${dDisp}`;
     }
     if (chooseBookingSubtitle) {
-      chooseBookingSubtitle.textContent = `Am ${dDisp} liegen ${matches.length} Buchungen vor:`;
+      chooseBookingSubtitle.textContent = `📅 ${dDisp} • ${matchesToDisplay.length} Buchung(en) am gesamten Tag`;
     }
 
-    let html = "";
-    matches.forEach(m => {
-      html += `
-        <div class="choose-booking-item" style="display: flex; justify-content: space-between; align-items: center; background: #f8fafc; border: 1px solid var(--border); border-radius: 6px; padding: 0.65rem 0.85rem; gap: 0.75rem;">
-          <div>
-            <div style="font-weight: 600; color: #0f172a; font-size: 0.92rem;">
-              Zeile ${m.rowIdx}: <span style="color: #0369a1;">${formatHoursDe(m.hours)} Stunden</span>
-            </div>
-            ${m.info ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 3px;">${escapeHtml(m.info)}</div>` : ''}
-          </div>
-          <button type="button" class="btn btn-primary btn-sm btn-edit-specific-row" data-row="${m.rowIdx}" style="padding: 4px 12px; font-size: 0.82rem; white-space: nowrap;">
-            ✏️ Bearbeiten
-          </button>
-        </div>
+    const btnScopeEmployee = document.getElementById("btn-scope-employee");
+    const btnScopeAll = document.getElementById("btn-scope-all");
+    const scopeEmpNameEl = document.getElementById("scope-employee-name");
+    const scopeEmpCountEl = document.getElementById("scope-employee-count");
+    const scopeAllCountEl = document.getElementById("scope-all-count");
+    const dayOverviewTotalHoursEl = document.getElementById("day-overview-total-hours");
+    const dayOverviewCountBadgeEl = document.getElementById("day-overview-count-badge");
+    const thDayEmployee = document.getElementById("th-day-employee");
+
+    if (scopeEmpNameEl) scopeEmpNameEl.textContent = empName;
+    if (scopeEmpCountEl) scopeEmpCountEl.textContent = empMatches.length;
+    if (scopeAllCountEl) scopeAllCountEl.textContent = allMatches.length;
+
+    if (!resource || resource === "all") {
+      if (btnScopeEmployee) btnScopeEmployee.style.display = "none";
+    } else {
+      if (btnScopeEmployee) {
+        btnScopeEmployee.style.display = "inline-block";
+        if (currentScope === "employee") {
+          btnScopeEmployee.className = "btn btn-sm btn-primary";
+          if (btnScopeAll) btnScopeAll.className = "btn btn-sm btn-secondary";
+        } else {
+          btnScopeEmployee.className = "btn btn-sm btn-secondary";
+          if (btnScopeAll) btnScopeAll.className = "btn btn-sm btn-primary";
+        }
+        btnScopeEmployee.onclick = () => openDayOverviewModal(resource, dateIso, "employee");
+      }
+    }
+    if (btnScopeAll) {
+      if (currentScope === "all") {
+        btnScopeAll.className = "btn btn-sm btn-primary";
+      } else {
+        btnScopeAll.className = "btn btn-sm btn-secondary";
+      }
+      btnScopeAll.onclick = () => openDayOverviewModal(resource, dateIso, "all");
+    }
+
+    // Gesamtsumme der angezeigten Buchungen berechnen
+    let totalDisplayedHours = 0;
+    matchesToDisplay.forEach(m => {
+      totalDisplayedHours += (typeof m.hours === "number" ? m.hours : parseFloat(m.hours) || 0);
+    });
+
+    if (dayOverviewTotalHoursEl) dayOverviewTotalHoursEl.textContent = formatHoursDe(totalDisplayedHours);
+    if (dayOverviewCountBadgeEl) dayOverviewCountBadgeEl.textContent = matchesToDisplay.length;
+
+    if (thDayEmployee) {
+      thDayEmployee.style.display = (currentScope === "all") ? "" : "";
+    }
+
+    // Tabelle mit allen Zeilen generieren
+    if (matchesToDisplay.length === 0) {
+      chooseBookingList.innerHTML = `
+        <tr>
+          <td colspan="5" style="text-align: center; padding: 2.5rem 1rem; color: var(--text-muted);">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">📭</div>
+            <strong style="font-size: 1rem; color: #334155;">Keine Buchungen an diesem Tag gefunden</strong>
+            <p style="font-size: 0.85rem; margin-top: 0.35rem; color: #64748b;">Für ${empName} am ${dDisp} liegen derzeit keine Einträge vor.</p>
+            <button type="button" class="btn btn-primary btn-sm btn-modal-add-entry-empty" style="margin-top: 0.75rem; background: #0284c7; border-color: #0284c7;">
+              ➕ Erste Buchung für diesen Tag nachtragen
+            </button>
+          </td>
+        </tr>
       `;
-    });
-    chooseBookingList.innerHTML = html;
-
-    chooseBookingList.querySelectorAll(".btn-edit-specific-row").forEach(btn => {
-      btn.addEventListener("click", () => {
-        const rIdx = parseInt(btn.dataset.row, 10);
-        state.modalCaller = "timesheet";
-        closeChooseBookingModal();
-        openEditRowModal(rIdx);
+      const btnAddEmpty = chooseBookingList.querySelector(".btn-modal-add-entry-empty");
+      if (btnAddEmpty) {
+        btnAddEmpty.addEventListener("click", () => {
+          closeChooseBookingModal();
+          openInsertRowModal(null, { res: resource, dateIso: dateIso });
+        });
+      }
+    } else {
+      let tbodyHtml = "";
+      matchesToDisplay.forEach(m => {
+        const empLabel = m.employeeName ? `${escapeHtml(m.employeeName)} <span style="color:var(--text-muted); font-size:0.8rem;">(Nr. ${escapeHtml(m.resourcePadded || m.resource)})</span>` : `Ressource ${escapeHtml(m.resourcePadded || m.resource)}`;
+        tbodyHtml += `
+          <tr style="border-bottom: 1px solid #e2e8f0;" class="day-overview-row">
+            <td style="padding: 0.65rem 0.75rem; text-align: center; vertical-align: middle;">
+              <span class="badge" style="background: #e2e8f0; color: #334155; font-weight: 700; font-size: 0.82rem;">#${m.rowIdx}</span>
+            </td>
+            <td style="padding: 0.65rem 0.75rem; vertical-align: middle;">
+              <div style="font-weight: 600; color: #0f172a;">${empLabel}</div>
+            </td>
+            <td style="padding: 0.65rem 0.75rem; text-align: right; vertical-align: middle;">
+              <span class="ts-hour-badge" style="font-size: 0.92rem; padding: 3px 8px;">${m.hoursFormatted} h</span>
+            </td>
+            <td style="padding: 0.65rem 0.75rem; vertical-align: middle;">
+              <div style="font-size: 0.85rem; color: #334155; line-height: 1.45;">
+                ${m.info ? m.info : '<span style="color:var(--text-muted); font-style:italic;">Keine Zusatzdaten</span>'}
+              </div>
+            </td>
+            <td style="padding: 0.65rem 0.75rem; text-align: center; vertical-align: middle; white-space: nowrap;">
+              <div style="display: flex; gap: 0.4rem; justify-content: center;">
+                <button type="button" class="btn btn-primary btn-sm btn-day-edit-row" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem;" title="Zeile ${m.rowIdx} bearbeiten">
+                  ✏️ Bearbeiten
+                </button>
+                <button type="button" class="btn btn-danger btn-sm btn-day-delete-row" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem; background: #dc2626; border-color: #dc2626;" title="Zeile ${m.rowIdx} löschen">
+                  🗑️ Löschen
+                </button>
+              </div>
+            </td>
+          </tr>
+        `;
       });
-    });
+      chooseBookingList.innerHTML = tbodyHtml;
 
+      // Event Listener für Bearbeiten
+      chooseBookingList.querySelectorAll(".btn-day-edit-row").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const rIdx = parseInt(btn.dataset.row, 10);
+          state.modalCaller = "day-overview";
+          closeChooseBookingModal();
+          openEditRowModal(rIdx);
+        });
+      });
+
+      // Event Listener für Löschen
+      chooseBookingList.querySelectorAll(".btn-day-delete-row").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const rIdx = parseInt(btn.dataset.row, 10);
+          state.modalCaller = "day-overview";
+          openDeleteEntryModal(rIdx);
+        });
+      });
+    }
+
+    // Fußzeile der Tabelle
+    const chooseBookingTfoot = document.getElementById("choose-booking-tfoot");
+    if (chooseBookingTfoot) {
+      chooseBookingTfoot.innerHTML = `
+        <tr>
+          <td colspan="2" style="padding: 0.65rem 0.75rem; text-align: right;">
+            <strong>Gesamtsumme Tag:</strong>
+          </td>
+          <td style="padding: 0.65rem 0.75rem; text-align: right;">
+            <strong style="color: #0369a1; font-size: 0.95rem;">${formatHoursDe(totalDisplayedHours)} h</strong>
+          </td>
+          <td colspan="2" style="padding: 0.65rem 0.75rem; color: var(--text-muted); font-size: 0.82rem;">
+            ${matchesToDisplay.length} Buchung(en) insgesamt
+          </td>
+        </tr>
+      `;
+    }
+
+    // Button: Weitere Buchung eintragen
     if (btnChooseAddNew) {
       btnChooseAddNew.onclick = () => {
-        state.modalCaller = "timesheet";
+        state.modalCaller = "day-overview";
         closeChooseBookingModal();
-        openInsertRowModal(null, { res: resource, dateIso: dateIso });
+        openInsertRowModal(null, { res: (resource !== "all" ? resource : null), dateIso: dateIso });
+      };
+    }
+
+    // Button: Drilldown in Gesamttabelle
+    const btnDrilldown = document.getElementById("btn-choose-drilldown-full");
+    if (btnDrilldown) {
+      btnDrilldown.onclick = () => {
+        closeChooseBookingModal();
+        drillDownToFullTable((currentScope === "employee" ? resource : null), dateIso);
       };
     }
 
     modalChooseBooking.classList.remove("hidden");
   }
+
+  // Rückwärtskompatibilität
+  const openChooseBookingModal = openDayOverviewModal;
 
   // Generiert die dynamischen Input-Felder im Modal für jede Spalte
   function renderModalFields(tgtHeaders, dateColIdx, resColIdx, hoursColIdx) {
@@ -4704,7 +5227,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const num = parseFloat(val.replace(",", "."));
             if (!isNaN(num)) {
               cell.value = num;
-              cell.numFmt = "#,##0.0";
+              cell.numFmt = "0.00";
               cell.alignment = { horizontal: "right", vertical: "middle" };
               state.appliedCorrections[cellKey] = num;
             } else {
@@ -4735,8 +5258,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       showToast(`✅ Änderungen für Zeile ${rowIdx} erfolgreich in Prüfdatei gespeichert!`);
 
-      // Wenn aus der Wochentabelle aufgerufen: Wochentabelle direkt wieder im Blick behalten
-      if (state.modalCaller === "timesheet") {
+      // Wenn Tagesübersicht aktiv war: aktualisieren und wieder anzeigen
+      if (state.activeDayOverview) {
+        openDayOverviewModal(state.activeDayOverview.resource, state.activeDayOverview.dateIso, state.activeDayOverview.scope);
+      } else if (state.modalCaller === "timesheet") {
         setTimeout(() => {
           const tsSec = document.getElementById("timesheet-section");
           if (tsSec) {
@@ -4878,7 +5403,7 @@ document.addEventListener("DOMContentLoaded", () => {
           }
           cell.alignment = { horizontal: "center", vertical: "middle" };
         } else if (c === hoursColIdx && typeof cell.value === "number") {
-          cell.numFmt = "#,##0.0";
+          cell.numFmt = "0.00";
           cell.alignment = { horizontal: "right", vertical: "middle" };
         }
       }
@@ -4909,8 +5434,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
       showToast(`✅ Zeile erfolgreich an Position ${insertAtRowIndex} in Prüfdatei eingefügt!`);
 
-      // Wenn aus der Wochentabelle aufgerufen: Wochentabelle direkt wieder im Blick behalten
-      if (state.modalCaller === "timesheet") {
+      // Wenn Tagesübersicht aktiv war: aktualisieren und wieder anzeigen
+      if (state.activeDayOverview) {
+        openDayOverviewModal(state.activeDayOverview.resource, state.activeDayOverview.dateIso, state.activeDayOverview.scope);
+      } else if (state.modalCaller === "timesheet") {
         setTimeout(() => {
           const tsSec = document.getElementById("timesheet-section");
           if (tsSec) {

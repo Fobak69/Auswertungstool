@@ -2,7 +2,7 @@
 // Excel-Prüfer Web Engine (100% Client-Side für Netlify & Browser)
 // Damerau-Levenshtein, O(1) Anagramm-Zahlendreher-Erkennung, 0000-Formatierung
 // ==============================================================================
-console.log("[ENGINE.JS] *** VERSION 4.0 GELADEN - 2026-10-12 ***");
+console.log("[ENGINE.JS] *** VERSION 4.3 GELADEN - 2026-10-14 ***");
 
 
 function extractCellValue(val, cell) {

@@ -675,6 +675,23 @@ body {
   color: white;
   border-color: var(--primary);
 }
+.btn-delete-entry {
+  padding: 0.35rem 0.6rem;
+  background-color: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+  color: #b91c1c;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.btn-delete-entry:hover {
+  background-color: #ef4444;
+  color: white;
+  border-color: #ef4444;
+}
 
 .alt-chips-container {
   display: flex;
@@ -1534,6 +1551,36 @@ body {
 .choose-booking-item:hover {
   background-color: #f1f5f9 !important;
   border-color: #94a3b8 !important;
+}
+
+.modal-day-overview {
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+.ts-date-header-clickable {
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.ts-date-header-clickable:hover {
+  background-color: #e2e8f0 !important;
+  color: #0369a1 !important;
+  text-decoration: underline;
+}
+
+.ts-total-day-clickable {
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.ts-total-day-clickable:hover {
+  background-color: #dbeafe !important;
+  color: #0284c7 !important;
+  text-decoration: underline;
+}
+
+.day-overview-row:hover {
+  background-color: #f8fafc !important;
 }
 
 .ts-emp-clickable {
