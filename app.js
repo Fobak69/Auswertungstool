@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.6 GELADEN - 2026-10-14 ***");
+console.log("[APP.JS] *** VERSION 4.7 GELADEN - 2026-10-14 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -452,7 +452,9 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const lowerName = (file.name || "").toLowerCase();
       if (lowerName.endsWith(".pdf")) {
-        alert(`📄 Die Datei "${file.name}" ist ein PDF-Dokument.\n\nBitte laden Sie hier eine Excel-Arbeitsmappe (.xlsx) hoch.`);
+        if (confirm(`📄 Die Datei "${file.name}" ist ein PDF-Dokument und keine Excel-Datei.\n\nMöchten Sie diese PDF-Datei als Beleg für die Fehler-Prüfung übernehmen?`)) {
+          await handlePdfFiles([file]);
+        }
         return;
       }
 
@@ -1129,29 +1131,42 @@ document.addEventListener("DOMContentLoaded", () => {
   async function handlePdfFiles(fileList) {
     if (!fileList || fileList.length === 0) return;
     if (typeof window.pdfjsLib === "undefined") {
-      alert("PDF.js-Bibliothek wurde noch nicht initialisiert. Bitte laden Sie die Seite kurz neu.");
+      alert("PDF.js-Bibliothek wurde noch nicht geladen. Bitte überprüfen Sie Ihre Internetverbindung oder laden Sie die Seite neu.");
       return;
     }
+
     try {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = "libs/pdf.worker.min.js";
+      if (typeof window.pdfjsWorker === "undefined") {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "libs/pdf.worker.min.js";
+      }
     } catch(e) {}
 
     showToast(`📄 Lese ${fileList.length} PDF-Datei(en) ein...`);
     let loadedCount = 0;
     let newPages = 0;
+    const errors = [];
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      if (!file.name.toLowerCase().endsWith(".pdf")) continue;
-
-      // Verhindere doppeltes Laden derselben Datei
-      if (state.uploadedPdfs.some(p => p.fileName === file.name && p.file.size === file.size)) {
+      const lower = (file.name || "").toLowerCase();
+      if (!lower.endsWith(".pdf") && file.type !== "application/pdf") {
+        errors.push(`"${file.name}" ist keine PDF-Datei.`);
         continue;
+      }
+
+      // Falls Datei bereits geladen war, alte Version entfernen und frisch einlesen
+      const existingIdx = state.uploadedPdfs.findIndex(p => p.fileName.toLowerCase() === file.name.toLowerCase());
+      if (existingIdx !== -1) {
+        state.uploadedPdfs.splice(existingIdx, 1);
       }
 
       try {
         const buffer = await file.arrayBuffer();
-        const pdfDoc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const dataArr = new Uint8Array(buffer);
+        const loadingTask = pdfjsLib.getDocument({
+          data: dataArr
+        });
+        const pdfDoc = await loadingTask.promise;
         const numPages = pdfDoc.numPages;
         newPages += numPages;
 
@@ -1177,20 +1192,39 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         loadedCount++;
       } catch(err) {
-        console.warn("Fehler beim Einlesen von PDF:", file.name, err);
+        console.error("Fehler beim Einlesen von PDF:", file.name, err);
+        errors.push(`"${file.name}": ${err.message || err}`);
       }
     }
 
-    updatePdfUploadUI();
-    renderResultsTable(); // Aktualisiert Tabelle um "📄 Beleg" Buttons anzuzeigen
-    showToast(`✅ ${loadedCount} PDF-Datei(en) mit insgesamt ${newPages} Seiten erfolgreich geladen!`);
+    if (errors.length > 0) {
+      alert(`Hinweis zu den Beleg-PDFs:\n\n${errors.join("\n")}`);
+    }
+
+    if (loadedCount > 0) {
+      updatePdfUploadUI();
+      renderResultsTable(); // Aktualisiert Tabelle um "📄 Beleg" Buttons anzuzeigen
+      showToast(`✅ ${loadedCount} PDF-Datei(en) mit insgesamt ${newPages} Seiten erfolgreich geladen!`);
+    } else if (errors.length === 0) {
+      showToast(`ℹ️ Keine neuen PDF-Dateien zum Hinzufügen gefunden.`);
+    }
   }
 
   function setupPdfDropZone() {
     if (!dropPdf || !inputPdf) return;
 
+    let dragCounter = 0;
+
+    // Klick-Auswahl
     dropPdf.addEventListener("click", (e) => {
-      if (e.target.closest("button") || e.target.closest(".file-info")) return;
+      if (
+        e.target.closest("button") ||
+        e.target.closest(".file-info") ||
+        e.target.closest("select") ||
+        e.target.closest("a")
+      ) {
+        return;
+      }
       inputPdf.click();
     });
 
@@ -1218,30 +1252,54 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
-    dropPdf.addEventListener("dragenter", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dropPdf.classList.add("dragover");
-    }, false);
-
-    dropPdf.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dropPdf.classList.add("dragover");
-    }, false);
+    // Robuste Drag & Drop Behandlung
+    ["dragenter", "dragover"].forEach(evtName => {
+      dropPdf.addEventListener(evtName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (evtName === "dragenter") {
+          dragCounter++;
+        }
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = "copy";
+        }
+        dropPdf.classList.add("dragover");
+      }, false);
+    });
 
     dropPdf.addEventListener("dragleave", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      dropPdf.classList.remove("dragover");
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        dropPdf.classList.remove("dragover");
+      }
     }, false);
 
     dropPdf.addEventListener("drop", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      dragCounter = 0;
       dropPdf.classList.remove("dragover");
+
+      const droppedFiles = [];
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        handlePdfFiles(e.dataTransfer.files);
+        for (let i = 0; i < e.dataTransfer.files.length; i++) {
+          droppedFiles.push(e.dataTransfer.files[i]);
+        }
+      } else if (e.dataTransfer && e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+        for (let i = 0; i < e.dataTransfer.items.length; i++) {
+          const item = e.dataTransfer.items[i];
+          if (item.kind === "file") {
+            const f = item.getAsFile();
+            if (f) droppedFiles.push(f);
+          }
+        }
+      }
+
+      if (droppedFiles.length > 0) {
+        handlePdfFiles(droppedFiles);
       }
     }, false);
   }

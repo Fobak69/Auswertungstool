@@ -1,0 +1,13 @@
+# Python Cache
+__pycache__/
+*.pyc
+
+# Echte Daten & PDFs (Datenschutz)
+*.pdf
+Arbeitsberichte/
+
+# Betriebssystem & Editoren
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

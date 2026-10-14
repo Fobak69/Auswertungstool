@@ -1799,9 +1799,19 @@ body {
    ========================================================================== */
 .drop-pdf {
   border-color: #c7d2fe;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f3ff 100%);
+  transition: all 0.2s ease;
 }
 .drop-pdf:hover {
   border-color: #6366f1;
+  background-color: #f5f3ff;
+}
+.drop-pdf.dragover {
+  border-color: #4f46e5 !important;
+  background-color: #e0e7ff !important;
+  border-width: 2px !important;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.25) !important;
+  transform: scale(1.01);
 }
 
 .pdf-viewer-modal-dialog {
