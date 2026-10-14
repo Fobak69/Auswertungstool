@@ -1360,7 +1360,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 2. Bereinigte Werte für Suche vorbereiten
     const cleanOrder = orderVal ? String(orderVal).trim().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
-    const cleanRes = resVal ? String(resVal).trim().replace(/^0+/, "") : "";
+    const cleanRes = resVal ? String(resVal).trim().replace(/^0+/, "").replace(/[^a-z0-9]/g, "") : "";
     const paddedRes = cleanRes ? cleanRes.padStart(4, "0") : "";
 
     // Mitarbeitername ermitteln
@@ -1616,7 +1616,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const p = parseInt(btn.dataset.page, 10);
         if (p === pageNum) {
           btn.classList.add("active");
-          btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+          try {
+            btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+          } catch(e) {}
         } else {
           btn.classList.remove("active");
         }
@@ -1682,11 +1684,11 @@ document.addEventListener("DOMContentLoaded", () => {
     let neighborKeywords = "";
 
     let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
-    let orderColIdx = 2;
+    let orderColIdx = parseInt(document.getElementById("select-ts-order-col")?.value, 10) || 2;
     let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
     let hoursColIdx = parseInt(selectTsHoursCol?.value, 10) || 4;
-    let leistungColIdx = parseInt(selectTsCostCenterCol?.value, 10) || 5;
-    let descColIdx = parseInt(selectTsDescCol?.value, 10) || 6;
+    let leistungColIdx = parseInt(document.getElementById("select-ts-cost-center-col")?.value, 10) || 5;
+    let descColIdx = parseInt(document.getElementById("select-ts-desc-col")?.value, 10) || 6;
 
     if (ws) {
       const hRow = ws.getRow(1);
