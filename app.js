@@ -188,6 +188,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const pdfModalDate = document.getElementById("pdf-modal-date");
   const pdfModalRes = document.getElementById("pdf-modal-res");
   const pdfSelectDoc = document.getElementById("pdf-select-doc");
+  const pdfSelectPage = document.getElementById("pdf-select-page");
+  const pdfPageStrip = document.getElementById("pdf-page-strip");
   const btnPdfPrev = document.getElementById("btn-pdf-prev");
   const pdfPageIndicator = document.getElementById("pdf-page-indicator");
   const btnPdfNext = document.getElementById("btn-pdf-next");
@@ -1170,16 +1172,35 @@ document.addEventListener("DOMContentLoaded", () => {
         const numPages = pdfDoc.numPages;
         newPages += numPages;
 
-        // Vorab-Textextraktion aller Seiten für blitzschnelle Zuordnung
+        // Vorab-Textextraktion aller Seiten für blitzschnelle Zuordnung & Seiten-Etiketten
         const pageTexts = [];
+        const pageLabels = [];
         for (let p = 1; p <= numPages; p++) {
           try {
             const page = await pdfDoc.getPage(p);
             const tc = await page.getTextContent();
             const str = tc.items.map(it => it.str).join(" ");
             pageTexts.push(str);
+
+            let type = "";
+            if (/revier.*nord/i.test(str)) type = "Revier Nord / Salinental";
+            else if (/revier.*süd|revier.*sued/i.test(str)) type = "Revier Süd";
+            else if (/baltz/i.test(str)) type = "Baltz";
+            else if (/steffen/i.test(str)) type = "Steffen";
+            else if (/sp\.-bau|spielplatzbau/i.test(str)) type = "Spielplatzbau";
+            else if (/auftragserfassungsblatt/i.test(str)) type = "Erfassungsblatt";
+            else type = "Belegblatt";
+
+            const orders = str.match(/\b(463040|14[a-zA-Z0-9]{4,6}|[1-9]\d{5})\b/g) || [];
+            const staff = str.match(/\b(0121|0437|1769|2155|2160|0376|0780|1340|0180|0400|0644)\b/g) || [];
+
+            let lbl = `Seite ${p}: ${type}`;
+            if (orders.length > 0) lbl += ` (${[...new Set(orders)].slice(0, 2).join(", ")})`;
+            if (staff.length > 0) lbl += ` [MA ${[...new Set(staff)].slice(0, 2).join(", ")}]`;
+            pageLabels.push(lbl);
           } catch(e) {
             pageTexts.push("");
+            pageLabels.push(`Seite ${p}`);
           }
         }
 
@@ -1188,7 +1209,8 @@ document.addEventListener("DOMContentLoaded", () => {
           fileName: file.name,
           pdfDoc,
           numPages,
-          pageTexts
+          pageTexts,
+          pageLabels
         });
         loadedCount++;
       } catch(err) {
@@ -1306,11 +1328,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function findBestPdfMatch(info) {
     if (!state.uploadedPdfs || state.uploadedPdfs.length === 0) {
-      return { pdfIdx: 0, pageNum: 1, reason: "Keine PDFs geladen" };
+      return { pdfIdx: 0, pageNum: 1, score: 0, reason: "Keine PDFs geladen", alternatives: [] };
     }
 
-    const { rowNum, dateVal, orderVal, resVal } = info;
+    const {
+      rowNum = 1,
+      colIdx = 1,
+      dateVal = "",
+      orderVal = "",
+      resVal = "",
+      hoursVal = "",
+      leistungVal = "",
+      descVal = "",
+      neighborKeywords = "",
+      cellVal = "",
+      totalRows = 50
+    } = info;
 
+    // 1. Datum normalisieren für Dateinamen- und Seitentextabgleich
     let dTag = "";
     let dShort = "";
     if (dateVal) {
@@ -1323,76 +1358,239 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    // 2. Bereinigte Werte für Suche vorbereiten
     const cleanOrder = orderVal ? String(orderVal).trim().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
-    const cleanRes = resVal ? String(resVal).trim().toLowerCase().replace(/^0+/, "") : "";
+    const cleanRes = resVal ? String(resVal).trim().replace(/^0+/, "") : "";
+    const paddedRes = cleanRes ? cleanRes.padStart(4, "0") : "";
 
-    let bestMatch = null;
-    let bestScore = -1;
+    // Mitarbeitername ermitteln
+    let staffName = "";
+    if (resVal) {
+      const s = getStaffName(resVal);
+      if (s) staffName = s;
+    }
+
+    // Textuelle Schlagwörter kombinieren
+    const combinedKeywords = `${descVal} ${neighborKeywords} ${cellVal} ${staffName}`.toLowerCase();
+
+    const candidates = [];
 
     state.uploadedPdfs.forEach((pdfItem, pIdx) => {
       const fName = pdfItem.fileName.toLowerCase();
-      let fileBaseScore = 0;
-      if (dTag && fName.includes(dTag)) fileBaseScore += 50;
-      if (dShort && fName.includes(dShort)) fileBaseScore += 50;
-      if (cleanOrder && cleanOrder.length >= 4 && fName.includes(cleanOrder)) fileBaseScore += 70;
+      let fileBonus = 0;
+      if (dTag && fName.includes(dTag)) fileBonus += 20;
+      if (dShort && fName.includes(dShort)) fileBonus += 20;
+      if (cleanOrder && cleanOrder.length >= 4 && fName.includes(cleanOrder)) fileBonus += 30;
 
       for (let pageNum = 1; pageNum <= pdfItem.numPages; pageNum++) {
-        let pageScore = fileBaseScore;
-        const rawText = (pdfItem.pageTexts[pageNum - 1] || "").toLowerCase();
+        let pageScore = fileBonus;
+        const reasons = [];
+        const rawText = (pdfItem.pageTexts && pdfItem.pageTexts[pageNum - 1]) ? pdfItem.pageTexts[pageNum - 1].toLowerCase() : "";
         const cleanPageText = rawText.replace(/[^a-z0-9]/g, "");
+        const cleanDigits = rawText.replace(/[^0-9]/g, "");
 
-        // 1. Auftragsnummer Treffer
+        // A) Auftragsnummer Treffer
         if (cleanOrder && cleanOrder.length >= 3) {
-          if (rawText.includes(cleanOrder) || cleanPageText.includes(cleanOrder)) {
-            pageScore += 100;
+          const reOrderExact = new RegExp(`\\b${cleanOrder}\\b`, "i");
+          if (reOrderExact.test(rawText)) {
+            pageScore += 150;
+            reasons.push(`Auftrag ${orderVal}`);
+          } else if (cleanPageText.includes(cleanOrder)) {
+            pageScore += 120;
+            reasons.push(`Auftrag ${orderVal}`);
+          } else if (cleanOrder.length >= 5) {
+            // Teilweiser Abgleich (erste 4 oder letzte 4 Ziffern) bei OCR-Fehlern
+            const part1 = cleanOrder.slice(0, 4);
+            const part2 = cleanOrder.slice(-4);
+            if (cleanPageText.includes(part1) || cleanPageText.includes(part2)) {
+              pageScore += 45;
+              reasons.push(`Auftrag ${orderVal} (teilw.)`);
+            }
           }
         }
 
-        // 2. Mitarbeiter / Ressourcennummer Treffer
+        // B) Ressourcennummer / Personalnummer / Fahrzeug / Gerät
         if (cleanRes && cleanRes.length >= 2) {
-          if (rawText.includes(cleanRes) || cleanPageText.includes(cleanRes)) {
-            pageScore += 30;
+          const reResExact = new RegExp(`\\b(${paddedRes}|${cleanRes})\\b`);
+          if (reResExact.test(rawText)) {
+            pageScore += 100;
+            reasons.push(`Pers/Res ${resVal}`);
+          } else if (cleanDigits.includes(cleanRes) || cleanPageText.includes(cleanRes)) {
+            pageScore += 65;
+            reasons.push(`Pers/Res ${resVal}`);
           }
         }
 
-        // 3. Datum Treffer
+        // C) Mitarbeitername auf dem Beleg
+        if (staffName) {
+          const nameParts = staffName.split(/[\s,–-]+/).filter(p => p.length >= 3);
+          let nameMatched = false;
+          nameParts.forEach(part => {
+            if (!nameMatched && (rawText.includes(part.toLowerCase()) || cleanPageText.includes(part.toLowerCase()))) {
+              pageScore += 90;
+              reasons.push(`Mitarbeiter ${part}`);
+              nameMatched = true;
+            }
+          });
+        }
+
+        // D) Reviere & Formular-Kennungen (Nord, Süd, Baltz, Steffen, Spielplatzbau etc.)
+        const knownKeywords = [
+          { key: "revier nord", pts: 95, label: "Revier Nord" },
+          { key: "salinental", pts: 90, label: "Salinental" },
+          { key: "bme", pts: 75, label: "BME" },
+          { key: "revier süd", pts: 95, label: "Revier Süd" },
+          { key: "revier sued", pts: 95, label: "Revier Süd" },
+          { key: "baltz", pts: 95, label: "Baltz" },
+          { key: "steffen", pts: 95, label: "Steffen" },
+          { key: "spielplatzbau", pts: 95, label: "Spielplatzbau" },
+          { key: "sp.-bau", pts: 95, label: "Spielplatzbau" },
+          { key: "sp. bau", pts: 95, label: "Spielplatzbau" }
+        ];
+
+        knownKeywords.forEach(kwItem => {
+          if (combinedKeywords.includes(kwItem.key)) {
+            const kwClean = kwItem.key.replace(/[^a-z0-9]/g, "");
+            if (rawText.includes(kwItem.key) || cleanPageText.includes(kwClean)) {
+              pageScore += kwItem.pts;
+              reasons.push(kwItem.label);
+            }
+          }
+        });
+
+        // E) Spielplatz-Nummern (501..599)
+        const spMatch = combinedKeywords.match(/\b(50[1-9])\b/);
+        if (spMatch) {
+          if (rawText.includes(spMatch[1]) || cleanPageText.includes(spMatch[1])) {
+            pageScore += 55;
+            reasons.push(`Spielplatz ${spMatch[1]}`);
+          }
+        }
+
+        // F) Beanstandeter Zellwert (z. B. Kostenstelle, Lohnart, Stunden)
+        if (cellVal && String(cellVal).trim().length >= 2) {
+          const cleanVal = String(cellVal).trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (cleanVal.length >= 2 && !cleanVal.includes(cleanOrder) && cleanVal !== cleanRes) {
+            if (rawText.includes(cleanVal) || cleanPageText.includes(cleanVal)) {
+              pageScore += 35;
+              reasons.push(`Wert "${cellVal}"`);
+            }
+          }
+        }
+
+        // G) Datum auf der Seite
         if (dShort && rawText.includes(dShort)) {
-          pageScore += 25;
+          pageScore += 20;
+          reasons.push(`Datum ${dShort}`);
         }
 
-        if (pageScore > bestScore) {
-          let reason = "🎯 Direkter Treffer";
-          if (cleanOrder && (rawText.includes(cleanOrder) || cleanPageText.includes(cleanOrder))) {
-            reason = `Auftrag ${orderVal} auf Seite ${pageNum} gefunden`;
-          } else if (fileBaseScore > 0) {
-            reason = `Datum ${dateVal || dShort} in ${pdfItem.fileName}`;
-          }
-          bestScore = pageScore;
-          bestMatch = { pdfIdx: pIdx, pageNum, score: pageScore, reason };
-        }
+        // H) Dokumenten-Proportionalitätsbonus (Findus erfasst Seiten chronologisch)
+        const estPage = Math.min(Math.max(1, Math.round((rowNum / Math.max(totalRows, 1)) * pdfItem.numPages)), pdfItem.numPages);
+        const dist = Math.abs(pageNum - estPage);
+        let proxBonus = 0;
+        if (dist === 0) proxBonus = 25;
+        else if (dist === 1) proxBonus = 18;
+        else if (dist === 2) proxBonus = 12;
+        else if (dist <= 4) proxBonus = 6;
+        pageScore += proxBonus;
+
+        candidates.push({
+          pdfIdx: pIdx,
+          pageNum,
+          score: pageScore,
+          reasons,
+          dist,
+          estPage,
+          label: (pdfItem.pageLabels && pdfItem.pageLabels[pageNum - 1]) ? pdfItem.pageLabels[pageNum - 1] : `Seite ${pageNum}`
+        });
       }
     });
 
-    if (!bestMatch || bestScore <= 0) {
-      let chosenPdfIdx = 0;
-      if (dTag) {
-        const idx = state.uploadedPdfs.findIndex(p => p.fileName.includes(dTag) || (dShort && p.fileName.includes(dShort)));
-        if (idx !== -1) chosenPdfIdx = idx;
+    // Nach Score absteigend sortieren
+    candidates.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.dist - b.dist; // bei Gleichstand nähere Seite bevorzugen
+    });
+
+    if (candidates.length > 0 && candidates[0].score >= 35) {
+      const best = candidates[0];
+      const alts = candidates.slice(1, 4).filter(c => c.score >= 35 && c.pageNum !== best.pageNum);
+
+      let reasonText = `🎯 S. ${best.pageNum}: `;
+      if (best.reasons.length > 0) {
+        reasonText += best.reasons.slice(0, 2).join(", ");
+      } else {
+        reasonText += `Automatisch ermittelt (Score ${best.score})`;
       }
-      const pdf = state.uploadedPdfs[chosenPdfIdx];
-      const totalRows = (state.targetWorkbook && state.currentTargetSheet)
-        ? Math.max(state.targetWorkbook.getWorksheet(state.currentTargetSheet).actualRowCount || 1, 1)
-        : 50;
-      const estimatedPage = Math.min(Math.max(1, Math.ceil((rowNum / totalRows) * pdf.numPages)), pdf.numPages);
+      if (alts.length > 0) {
+        reasonText += ` (Alt: S. ${alts.map(a => a.pageNum).join(", ")})`;
+      }
+
       return {
-        pdfIdx: chosenPdfIdx,
-        pageNum: estimatedPage,
-        score: 0,
-        reason: `Geschätzte Seite ${estimatedPage} von ${pdf.numPages}`
+        pdfIdx: best.pdfIdx,
+        pageNum: best.pageNum,
+        score: best.score,
+        reason: reasonText,
+        alternatives: alts
       };
     }
 
-    return bestMatch;
+    // Fallback: Schätzung nach relativer Zeilenposition
+    const pdfItem = state.uploadedPdfs[0];
+    const numPages = pdfItem ? pdfItem.numPages : 1;
+    const estimatedPage = Math.min(Math.max(1, Math.round((rowNum / Math.max(totalRows, 1)) * numPages)), numPages);
+    return {
+      pdfIdx: 0,
+      pageNum: estimatedPage,
+      score: 0,
+      reason: `ℹ️ Geschätzte Seite ${estimatedPage} von ${numPages} (nach Zeilenposition)`,
+      alternatives: []
+    };
+  }
+
+  function updatePdfViewerPageControls(pdfItem, recommendedPage = 1, alternatives = []) {
+    if (!pdfItem) return;
+    const numPages = pdfItem.numPages;
+
+    // 1. Dropdown befüllen
+    if (pdfSelectPage) {
+      let pageOpts = "";
+      for (let p = 1; p <= numPages; p++) {
+        const lbl = (pdfItem.pageLabels && pdfItem.pageLabels[p - 1]) ? pdfItem.pageLabels[p - 1] : `Seite ${p}`;
+        const isRec = (p === recommendedPage);
+        const isAlt = alternatives.some(a => a.pageNum === p);
+        const prefix = isRec ? "⭐ " : (isAlt ? "💡 " : "");
+        pageOpts += `<option value="${p}">${prefix}${escapeHtml(lbl)}</option>`;
+      }
+      pdfSelectPage.innerHTML = pageOpts;
+      pdfSelectPage.value = String(state.activePdfViewer ? state.activePdfViewer.pageNum : recommendedPage);
+    }
+
+    // 2. Schnell-Auswahlleiste (Page Strip) befüllen
+    if (pdfPageStrip) {
+      let stripHtml = "";
+      for (let p = 1; p <= numPages; p++) {
+        const isRec = (p === recommendedPage);
+        const isAlt = alternatives.some(a => a.pageNum === p);
+        let cls = "pdf-strip-btn";
+        if (isRec) cls += " recommended";
+        const curPage = state.activePdfViewer ? state.activePdfViewer.pageNum : recommendedPage;
+        if (p === curPage) cls += " active";
+        const icon = isRec ? " ⭐" : (isAlt ? " 💡" : "");
+        const lbl = (pdfItem.pageLabels && pdfItem.pageLabels[p - 1]) ? pdfItem.pageLabels[p - 1] : `Seite ${p}`;
+        stripHtml += `<button type="button" class="${cls}" data-page="${p}" title="${escapeHtml(lbl)}">S. ${p}${icon}</button>`;
+      }
+      pdfPageStrip.innerHTML = stripHtml;
+
+      pdfPageStrip.querySelectorAll(".pdf-strip-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const targetPage = parseInt(btn.dataset.page, 10);
+          if (!state.activePdfViewer || isNaN(targetPage)) return;
+          state.activePdfViewer.pageNum = targetPage;
+          renderActivePdfPage();
+        });
+      });
+    }
   }
 
   async function renderActivePdfPage() {
@@ -1409,6 +1607,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (btnPdfPrev) btnPdfPrev.disabled = (pageNum <= 1);
     if (btnPdfNext) btnPdfNext.disabled = (pageNum >= pdfItem.numPages);
+
+    if (pdfSelectPage) {
+      pdfSelectPage.value = String(pageNum);
+    }
+    if (pdfPageStrip) {
+      pdfPageStrip.querySelectorAll(".pdf-strip-btn").forEach(btn => {
+        const p = parseInt(btn.dataset.page, 10);
+        if (p === pageNum) {
+          btn.classList.add("active");
+          btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+        } else {
+          btn.classList.remove("active");
+        }
+      });
+    }
 
     if (!pdfCanvas) return;
 
@@ -1461,25 +1674,65 @@ document.addEventListener("DOMContentLoaded", () => {
     let dateVal = "";
     let orderVal = "";
     let resVal = "";
+    let hoursVal = "";
+    let leistungVal = "";
+    let descVal = "";
     let cellVal = "";
     let colName = `Spalte ${colIdx}`;
+    let neighborKeywords = "";
 
-    const dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
-    const orderColIdx = parseInt(document.getElementById("select-ts-order-col")?.value, 10) || 2;
-    const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+    let dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+    let orderColIdx = 2;
+    let resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+    let hoursColIdx = parseInt(selectTsHoursCol?.value, 10) || 4;
+    let leistungColIdx = parseInt(selectTsCostCenterCol?.value, 10) || 5;
+    let descColIdx = parseInt(selectTsDescCol?.value, 10) || 6;
 
     if (ws) {
+      const hRow = ws.getRow(1);
+      if (hRow) {
+        hRow.eachCell({ includeEmpty: false }, (cell, cIdx) => {
+          const hText = String(cell.value || "").toLowerCase();
+          if (/auftrag|beleg|schein|order/i.test(hText)) orderColIdx = cIdx;
+          if (/datum|date/i.test(hText)) dateColIdx = cIdx;
+          if (/ressource|personal|pers|mitarbeiter|resourcen/i.test(hText)) resColIdx = cIdx;
+          if (/menge|stunde|std|zeit/i.test(hText)) hoursColIdx = cIdx;
+          if (/leistung|lohnart|kostenstelle/i.test(hText)) leistungColIdx = cIdx;
+          if (/beschreib|text|bemerk|hinweis/i.test(hText)) descColIdx = cIdx;
+        });
+      }
+
       const row = ws.getRow(rowNum);
       if (row) {
         dateVal = WebExcelEngine.extractCellValue(row.getCell(dateColIdx).value, row.getCell(dateColIdx));
         orderVal = WebExcelEngine.extractCellValue(row.getCell(orderColIdx).value, row.getCell(orderColIdx));
         resVal = WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx));
+        hoursVal = WebExcelEngine.extractCellValue(row.getCell(hoursColIdx).value, row.getCell(hoursColIdx));
+        leistungVal = WebExcelEngine.extractCellValue(row.getCell(leistungColIdx).value, row.getCell(leistungColIdx));
+        descVal = WebExcelEngine.extractCellValue(row.getCell(descColIdx).value, row.getCell(descColIdx));
         cellVal = WebExcelEngine.extractCellValue(row.getCell(colIdx).value, row.getCell(colIdx));
 
         const headerCell = ws.getRow(1).getCell(colIdx);
         if (headerCell && headerCell.value) {
           colName = WebExcelEngine.extractCellValue(headerCell.value, headerCell);
         }
+
+        // Sammle Kontext aus benachbarten Zeilen (±2 Zeilen), um Formular-Schlüsselwörter zu erfassen
+        const neighborParts = [];
+        [-2, -1, 1, 2].forEach(offset => {
+          const nRowNum = rowNum + offset;
+          if (nRowNum >= 2 && nRowNum <= ws.actualRowCount) {
+            const nRow = ws.getRow(nRowNum);
+            if (nRow) {
+              const nOrder = WebExcelEngine.extractCellValue(nRow.getCell(orderColIdx).value, nRow.getCell(orderColIdx));
+              if (!orderVal || nOrder === orderVal) {
+                const nDesc = WebExcelEngine.extractCellValue(nRow.getCell(descColIdx).value, nRow.getCell(descColIdx));
+                if (nDesc) neighborParts.push(nDesc);
+              }
+            }
+          }
+        });
+        neighborKeywords = neighborParts.join(" ");
       }
     }
 
@@ -1489,7 +1742,21 @@ document.addEventListener("DOMContentLoaded", () => {
       cellVal = state.appliedCorrections[cellKey];
     }
 
-    const match = findBestPdfMatch({ rowNum, colIdx, dateVal, orderVal, resVal });
+    const totalRows = (ws && ws.actualRowCount) ? ws.actualRowCount : 50;
+    const match = findBestPdfMatch({
+      rowNum,
+      colIdx,
+      dateVal,
+      orderVal,
+      resVal,
+      hoursVal,
+      leistungVal,
+      descVal,
+      neighborKeywords,
+      cellVal,
+      totalRows
+    });
+
     const rItem = state.allResults ? state.allResults.find(r => r.id === resultId || (r.row === rowNum && r.col_idx === colIdx)) : null;
 
     state.activePdfViewer = {
@@ -1510,6 +1777,10 @@ document.addEventListener("DOMContentLoaded", () => {
       ).join("");
     }
 
+    // Seiten-Steuerelemente & Schnellauswahlleiste initialisieren
+    const activePdfItem = state.uploadedPdfs[match.pdfIdx];
+    updatePdfViewerPageControls(activePdfItem, match.pageNum, match.alternatives);
+
     // Modal-Felder aktualisieren
     if (pdfModalTitle) {
       pdfModalTitle.innerHTML = `Original-Beleg (PDF) – <span id="pdf-modal-row-tag" class="pdf-chip-tag">Zeile ${rowNum}</span>`;
@@ -1528,6 +1799,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (pdfBadgeMatch) {
       pdfBadgeMatch.textContent = match.reason || "Automatisch zugeordnet";
+      if (match.score >= 50) {
+        pdfBadgeMatch.style.background = "#ecfdf5";
+        pdfBadgeMatch.style.color = "#047857";
+        pdfBadgeMatch.style.borderColor = "#10b981";
+      } else {
+        pdfBadgeMatch.style.background = "#eff6ff";
+        pdfBadgeMatch.style.color = "#1d4ed8";
+        pdfBadgeMatch.style.borderColor = "#93c5fd";
+      }
     }
 
     const startVal = (rItem && rItem.suggestion) ? rItem.suggestion : (rItem ? rItem.current_value : cellVal);
@@ -1629,11 +1909,21 @@ document.addEventListener("DOMContentLoaded", () => {
       };
     }
 
+    if (pdfSelectPage) {
+      pdfSelectPage.onchange = () => {
+        if (!state.activePdfViewer) return;
+        state.activePdfViewer.pageNum = parseInt(pdfSelectPage.value, 10) || 1;
+        renderActivePdfPage();
+      };
+    }
+
     if (pdfSelectDoc) {
       pdfSelectDoc.onchange = () => {
         if (!state.activePdfViewer) return;
         state.activePdfViewer.pdfIdx = parseInt(pdfSelectDoc.value, 10) || 0;
         state.activePdfViewer.pageNum = 1;
+        const pdfItem = state.uploadedPdfs[state.activePdfViewer.pdfIdx];
+        updatePdfViewerPageControls(pdfItem, 1, []);
         renderActivePdfPage();
       };
     }

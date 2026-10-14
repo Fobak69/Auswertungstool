@@ -729,11 +729,12 @@
 
         <!-- Controls: PDF-Wahl, Seiten blättern, Zoom -->
         <div class="pdf-header-controls">
-          <select id="pdf-select-doc" class="form-select form-select-sm" style="max-width: 200px;" title="PDF-Datei auswählen"></select>
+          <select id="pdf-select-doc" class="form-select form-select-sm" style="max-width: 180px;" title="PDF-Datei auswählen"></select>
+          <select id="pdf-select-page" class="form-select form-select-sm" style="max-width: 250px; font-weight: 600;" title="Direkt zu einer Seite springen"></select>
           
           <div style="display: flex; align-items: center; gap: 4px; background: white; border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px;">
             <button type="button" id="btn-pdf-prev" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" title="Vorherige Seite">◀</button>
-            <span id="pdf-page-indicator" style="font-weight: 600; font-size: 0.82rem; min-width: 80px; text-align: center;">Seite 1 / 1</span>
+            <span id="pdf-page-indicator" style="font-weight: 600; font-size: 0.82rem; min-width: 70px; text-align: center;">Seite 1 / 1</span>
             <button type="button" id="btn-pdf-next" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" title="Nächste Seite">▶</button>
           </div>
 
@@ -747,6 +748,9 @@
           <button type="button" id="btn-close-pdf-modal" class="modal-close-btn" title="Schließen">&times;</button>
         </div>
       </div>
+
+      <!-- Schnellauswahl-Leiste aller Seiten -->
+      <div id="pdf-page-strip" class="pdf-page-strip"></div>
 
       <!-- Split Body: Links Canvas, Rechts Schnell-Korrektur -->
       <div class="pdf-split-container">
