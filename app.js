@@ -41,7 +41,9 @@ document.addEventListener("DOMContentLoaded", () => {
     modalCaller: "timesheet",
     highlightEmployeeRes: null,
     activeDeleteTarget: null, // { id, row, col_idx, cell, origVal }
-    activeDayOverview: null // { resource, dateIso, scope }
+    activeDayOverview: null, // { resource, dateIso, scope }
+    uploadedPdfs: [], // Array von { file, fileName, pdfDoc, numPages, pageTexts }
+    activePdfViewer: null // { rowNum, colIdx, resultId, rowData, pdfIdx, page, zoomScale }
   };
 
   // DOM Elemente
@@ -166,6 +168,48 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnConfirmClearCell = document.getElementById("btn-confirm-clear-cell");
   const btnCloseDeleteModal = document.getElementById("btn-close-delete-modal");
   const btnCancelDelete = document.getElementById("btn-cancel-delete");
+
+  // PDF Upload DOM
+  const dropPdf = document.getElementById("drop-pdf");
+  const inputPdf = document.getElementById("input-pdf");
+  const pdfDropZoneContent = document.getElementById("pdf-drop-zone-content");
+  const pdfFileInfo = document.getElementById("pdf-file-info");
+  const pdfInfoTitle = document.getElementById("pdf-info-title");
+  const pdfInfoDetail = document.getElementById("pdf-info-detail");
+  const btnAddMorePdf = document.getElementById("btn-add-more-pdf");
+  const btnClearPdf = document.getElementById("btn-clear-pdf");
+  const pdfStorageBadge = document.getElementById("pdf-storage-badge");
+
+  // PDF Viewer Modal DOM
+  const modalPdfViewer = document.getElementById("modal-pdf-viewer");
+  const pdfModalTitle = document.getElementById("pdf-modal-title");
+  const pdfModalRowTag = document.getElementById("pdf-modal-row-tag");
+  const pdfModalOrder = document.getElementById("pdf-modal-order");
+  const pdfModalDate = document.getElementById("pdf-modal-date");
+  const pdfModalRes = document.getElementById("pdf-modal-res");
+  const pdfSelectDoc = document.getElementById("pdf-select-doc");
+  const btnPdfPrev = document.getElementById("btn-pdf-prev");
+  const pdfPageIndicator = document.getElementById("pdf-page-indicator");
+  const btnPdfNext = document.getElementById("btn-pdf-next");
+  const btnPdfZoomOut = document.getElementById("btn-pdf-zoom-out");
+  const pdfZoomLevel = document.getElementById("pdf-zoom-level");
+  const btnPdfZoomIn = document.getElementById("btn-pdf-zoom-in");
+  const btnPdfFit = document.getElementById("btn-pdf-fit");
+  const btnClosePdfModal = document.getElementById("btn-close-pdf-modal");
+  const pdfCanvas = document.getElementById("pdf-canvas");
+  const pdfCanvasPane = document.getElementById("pdf-canvas-pane");
+  const pdfBadgeMatch = document.getElementById("pdf-badge-match");
+  const pdfColInfo = document.getElementById("pdf-col-info");
+  const pdfCurVal = document.getElementById("pdf-cur-val");
+  const pdfProblemInfo = document.getElementById("pdf-problem-info");
+  const pdfInputVal = document.getElementById("pdf-input-val");
+  const pdfSuggestionsArea = document.getElementById("pdf-suggestions-area");
+  const pdfSuggestionsList = document.getElementById("pdf-suggestions-list");
+  const pdfStaffSelectArea = document.getElementById("pdf-staff-select-area");
+  const pdfStaffSelect = document.getElementById("pdf-staff-select");
+  const btnPdfSaveAndClose = document.getElementById("btn-pdf-save-and-close");
+  const btnPdfJustClose = document.getElementById("btn-pdf-just-close");
+  const btnModalOpenPdf = document.getElementById("btn-modal-open-pdf");
 
   // Hilfsfunktion: Ermittelt verlässlich die Spalte für Arbeitszeiten / Stunden
   function getHoursColIdx() {
@@ -1052,6 +1096,558 @@ document.addEventListener("DOMContentLoaded", () => {
   // Gespeicherte Referenzdatei & Mitarbeiter beim Start aus Browser-Speicher laden
   restoreSavedReferenceFile();
   loadStaffFromStorage();
+  setupPdfDropZone();
+  setupPdfViewerControls();
+
+  // --- Original-Belege (PDF) Prüfung & Vorschau ---
+  let currentPdfRenderTask = null;
+
+  function updatePdfUploadUI() {
+    if (!dropPdf) return;
+    const count = state.uploadedPdfs ? state.uploadedPdfs.length : 0;
+    if (count > 0) {
+      if (pdfDropZoneContent) pdfDropZoneContent.classList.add("hidden");
+      if (pdfFileInfo) pdfFileInfo.classList.remove("hidden");
+      const totalP = state.uploadedPdfs.reduce((sum, p) => sum + p.numPages, 0);
+      const names = state.uploadedPdfs.map(p => p.fileName).join(", ");
+      if (pdfInfoTitle) pdfInfoTitle.textContent = `${count} PDF-Datei(en) geladen (${totalP} Seiten)`;
+      if (pdfInfoDetail) pdfInfoDetail.textContent = `Aktiv: ${names}`;
+      if (pdfStorageBadge) {
+        pdfStorageBadge.textContent = `${count} PDFs aktiv`;
+        pdfStorageBadge.className = "badge badge-ok";
+      }
+    } else {
+      if (pdfDropZoneContent) pdfDropZoneContent.classList.remove("hidden");
+      if (pdfFileInfo) pdfFileInfo.classList.add("hidden");
+      if (pdfStorageBadge) {
+        pdfStorageBadge.textContent = "Optional";
+        pdfStorageBadge.className = "badge badge-leer-ok";
+      }
+    }
+  }
+
+  async function handlePdfFiles(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    if (typeof window.pdfjsLib === "undefined") {
+      alert("PDF.js-Bibliothek wurde noch nicht initialisiert. Bitte laden Sie die Seite kurz neu.");
+      return;
+    }
+    try {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "libs/pdf.worker.min.js";
+    } catch(e) {}
+
+    showToast(`📄 Lese ${fileList.length} PDF-Datei(en) ein...`);
+    let loadedCount = 0;
+    let newPages = 0;
+
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      if (!file.name.toLowerCase().endsWith(".pdf")) continue;
+
+      // Verhindere doppeltes Laden derselben Datei
+      if (state.uploadedPdfs.some(p => p.fileName === file.name && p.file.size === file.size)) {
+        continue;
+      }
+
+      try {
+        const buffer = await file.arrayBuffer();
+        const pdfDoc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const numPages = pdfDoc.numPages;
+        newPages += numPages;
+
+        // Vorab-Textextraktion aller Seiten für blitzschnelle Zuordnung
+        const pageTexts = [];
+        for (let p = 1; p <= numPages; p++) {
+          try {
+            const page = await pdfDoc.getPage(p);
+            const tc = await page.getTextContent();
+            const str = tc.items.map(it => it.str).join(" ");
+            pageTexts.push(str);
+          } catch(e) {
+            pageTexts.push("");
+          }
+        }
+
+        state.uploadedPdfs.push({
+          file,
+          fileName: file.name,
+          pdfDoc,
+          numPages,
+          pageTexts
+        });
+        loadedCount++;
+      } catch(err) {
+        console.warn("Fehler beim Einlesen von PDF:", file.name, err);
+      }
+    }
+
+    updatePdfUploadUI();
+    renderResultsTable(); // Aktualisiert Tabelle um "📄 Beleg" Buttons anzuzeigen
+    showToast(`✅ ${loadedCount} PDF-Datei(en) mit insgesamt ${newPages} Seiten erfolgreich geladen!`);
+  }
+
+  function setupPdfDropZone() {
+    if (!dropPdf || !inputPdf) return;
+
+    dropPdf.addEventListener("click", (e) => {
+      if (e.target.closest("button") || e.target.closest(".file-info")) return;
+      inputPdf.click();
+    });
+
+    inputPdf.addEventListener("change", () => {
+      if (inputPdf.files && inputPdf.files.length > 0) {
+        handlePdfFiles(inputPdf.files);
+        inputPdf.value = "";
+      }
+    });
+
+    if (btnAddMorePdf) {
+      btnAddMorePdf.addEventListener("click", (e) => {
+        e.stopPropagation();
+        inputPdf.click();
+      });
+    }
+
+    if (btnClearPdf) {
+      btnClearPdf.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.uploadedPdfs = [];
+        updatePdfUploadUI();
+        renderResultsTable();
+        showToast("📄 PDF-Belege entfernt.");
+      });
+    }
+
+    dropPdf.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropPdf.classList.add("dragover");
+    }, false);
+
+    dropPdf.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropPdf.classList.add("dragover");
+    }, false);
+
+    dropPdf.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropPdf.classList.remove("dragover");
+    }, false);
+
+    dropPdf.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropPdf.classList.remove("dragover");
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        handlePdfFiles(e.dataTransfer.files);
+      }
+    }, false);
+  }
+
+  function findBestPdfMatch(info) {
+    if (!state.uploadedPdfs || state.uploadedPdfs.length === 0) {
+      return { pdfIdx: 0, pageNum: 1, reason: "Keine PDFs geladen" };
+    }
+
+    const { rowNum, dateVal, orderVal, resVal } = info;
+
+    let dTag = "";
+    let dShort = "";
+    if (dateVal) {
+      const m = String(dateVal).match(/(\d{1,2})[./-](\d{1,2})/);
+      if (m) {
+        const day = m[1].padStart(2, "0");
+        const mon = m[2].padStart(2, "0");
+        dTag = `${day}${mon}`;
+        dShort = `${day}.${mon}`;
+      }
+    }
+
+    const cleanOrder = orderVal ? String(orderVal).trim().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+    const cleanRes = resVal ? String(resVal).trim().toLowerCase().replace(/^0+/, "") : "";
+
+    let bestMatch = null;
+    let bestScore = -1;
+
+    state.uploadedPdfs.forEach((pdfItem, pIdx) => {
+      const fName = pdfItem.fileName.toLowerCase();
+      let fileBaseScore = 0;
+      if (dTag && fName.includes(dTag)) fileBaseScore += 50;
+      if (dShort && fName.includes(dShort)) fileBaseScore += 50;
+      if (cleanOrder && cleanOrder.length >= 4 && fName.includes(cleanOrder)) fileBaseScore += 70;
+
+      for (let pageNum = 1; pageNum <= pdfItem.numPages; pageNum++) {
+        let pageScore = fileBaseScore;
+        const rawText = (pdfItem.pageTexts[pageNum - 1] || "").toLowerCase();
+        const cleanPageText = rawText.replace(/[^a-z0-9]/g, "");
+
+        // 1. Auftragsnummer Treffer
+        if (cleanOrder && cleanOrder.length >= 3) {
+          if (rawText.includes(cleanOrder) || cleanPageText.includes(cleanOrder)) {
+            pageScore += 100;
+          }
+        }
+
+        // 2. Mitarbeiter / Ressourcennummer Treffer
+        if (cleanRes && cleanRes.length >= 2) {
+          if (rawText.includes(cleanRes) || cleanPageText.includes(cleanRes)) {
+            pageScore += 30;
+          }
+        }
+
+        // 3. Datum Treffer
+        if (dShort && rawText.includes(dShort)) {
+          pageScore += 25;
+        }
+
+        if (pageScore > bestScore) {
+          let reason = "🎯 Direkter Treffer";
+          if (cleanOrder && (rawText.includes(cleanOrder) || cleanPageText.includes(cleanOrder))) {
+            reason = `Auftrag ${orderVal} auf Seite ${pageNum} gefunden`;
+          } else if (fileBaseScore > 0) {
+            reason = `Datum ${dateVal || dShort} in ${pdfItem.fileName}`;
+          }
+          bestScore = pageScore;
+          bestMatch = { pdfIdx: pIdx, pageNum, score: pageScore, reason };
+        }
+      }
+    });
+
+    if (!bestMatch || bestScore <= 0) {
+      let chosenPdfIdx = 0;
+      if (dTag) {
+        const idx = state.uploadedPdfs.findIndex(p => p.fileName.includes(dTag) || (dShort && p.fileName.includes(dShort)));
+        if (idx !== -1) chosenPdfIdx = idx;
+      }
+      const pdf = state.uploadedPdfs[chosenPdfIdx];
+      const totalRows = (state.targetWorkbook && state.currentTargetSheet)
+        ? Math.max(state.targetWorkbook.getWorksheet(state.currentTargetSheet).actualRowCount || 1, 1)
+        : 50;
+      const estimatedPage = Math.min(Math.max(1, Math.ceil((rowNum / totalRows) * pdf.numPages)), pdf.numPages);
+      return {
+        pdfIdx: chosenPdfIdx,
+        pageNum: estimatedPage,
+        score: 0,
+        reason: `Geschätzte Seite ${estimatedPage} von ${pdf.numPages}`
+      };
+    }
+
+    return bestMatch;
+  }
+
+  async function renderActivePdfPage() {
+    if (!state.activePdfViewer) return;
+    const { pdfIdx, pageNum, zoomScale } = state.activePdfViewer;
+    const pdfItem = state.uploadedPdfs[pdfIdx];
+    if (!pdfItem || !pdfItem.pdfDoc) return;
+
+    if (pdfPageIndicator) {
+      pdfPageIndicator.textContent = `Seite ${pageNum} / ${pdfItem.numPages}`;
+    }
+    if (pdfZoomLevel) {
+      pdfZoomLevel.textContent = `${Math.round(zoomScale * 100)}%`;
+    }
+    if (btnPdfPrev) btnPdfPrev.disabled = (pageNum <= 1);
+    if (btnPdfNext) btnPdfNext.disabled = (pageNum >= pdfItem.numPages);
+
+    if (!pdfCanvas) return;
+
+    if (currentPdfRenderTask) {
+      try {
+        currentPdfRenderTask.cancel();
+      } catch(e) {}
+      currentPdfRenderTask = null;
+    }
+
+    try {
+      const page = await pdfItem.pdfDoc.getPage(pageNum);
+      const pixelRatio = window.devicePixelRatio || 1;
+      const viewport = page.getViewport({ scale: zoomScale });
+
+      pdfCanvas.height = viewport.height * pixelRatio;
+      pdfCanvas.width = viewport.width * pixelRatio;
+      pdfCanvas.style.width = `${viewport.width}px`;
+      pdfCanvas.style.height = `${viewport.height}px`;
+
+      const ctx = pdfCanvas.getContext("2d");
+      ctx.save();
+      ctx.scale(pixelRatio, pixelRatio);
+
+      const renderContext = {
+        canvasContext: ctx,
+        viewport: viewport
+      };
+
+      currentPdfRenderTask = page.render(renderContext);
+      await currentPdfRenderTask.promise;
+      currentPdfRenderTask = null;
+      ctx.restore();
+    } catch (err) {
+      if (err && err.name !== "RenderingCancelledException") {
+        console.warn("PDF Rendering-Fehler:", err);
+      }
+    }
+  }
+
+  function openPdfViewerModal(rowNum, colIdx, resultId) {
+    if (!state.uploadedPdfs || state.uploadedPdfs.length === 0) {
+      if (confirm("Es sind noch keine PDF-Belege hochgeladen.\n\nMöchten Sie jetzt die zugehörige(n) PDF-Datei(en) auswählen?")) {
+        if (inputPdf) inputPdf.click();
+      }
+      return;
+    }
+
+    const ws = state.targetWorkbook ? state.targetWorkbook.getWorksheet(state.currentTargetSheet) : null;
+    let dateVal = "";
+    let orderVal = "";
+    let resVal = "";
+    let cellVal = "";
+    let colName = `Spalte ${colIdx}`;
+
+    const dateColIdx = parseInt(selectTsDateCol?.value, 10) || 1;
+    const orderColIdx = parseInt(document.getElementById("select-ts-order-col")?.value, 10) || 2;
+    const resColIdx = parseInt(selectTsResourceCol?.value, 10) || 3;
+
+    if (ws) {
+      const row = ws.getRow(rowNum);
+      if (row) {
+        dateVal = WebExcelEngine.extractCellValue(row.getCell(dateColIdx).value, row.getCell(dateColIdx));
+        orderVal = WebExcelEngine.extractCellValue(row.getCell(orderColIdx).value, row.getCell(orderColIdx));
+        resVal = WebExcelEngine.extractCellValue(row.getCell(resColIdx).value, row.getCell(resColIdx));
+        cellVal = WebExcelEngine.extractCellValue(row.getCell(colIdx).value, row.getCell(colIdx));
+
+        const headerCell = ws.getRow(1).getCell(colIdx);
+        if (headerCell && headerCell.value) {
+          colName = WebExcelEngine.extractCellValue(headerCell.value, headerCell);
+        }
+      }
+    }
+
+    // Aktuellen Wert prüfen (falls schon in appliedCorrections)
+    const cellKey = `${rowNum}_${colIdx}`;
+    if (state.appliedCorrections && state.appliedCorrections[cellKey] !== undefined) {
+      cellVal = state.appliedCorrections[cellKey];
+    }
+
+    const match = findBestPdfMatch({ rowNum, colIdx, dateVal, orderVal, resVal });
+    const rItem = state.allResults ? state.allResults.find(r => r.id === resultId || (r.row === rowNum && r.col_idx === colIdx)) : null;
+
+    state.activePdfViewer = {
+      rowNum,
+      colIdx,
+      resultId: resultId || cellKey,
+      rItem,
+      pdfIdx: match.pdfIdx,
+      pageNum: match.pageNum,
+      zoomScale: 1.25,
+      matchReason: match.reason
+    };
+
+    // PDF-Dokument-Auswahl befüllen
+    if (pdfSelectDoc) {
+      pdfSelectDoc.innerHTML = state.uploadedPdfs.map((p, idx) => 
+        `<option value="${idx}" ${idx === match.pdfIdx ? 'selected' : ''}>📄 ${escapeHtml(p.fileName)} (${p.numPages} S.)</option>`
+      ).join("");
+    }
+
+    // Modal-Felder aktualisieren
+    if (pdfModalTitle) {
+      pdfModalTitle.innerHTML = `Original-Beleg (PDF) – <span id="pdf-modal-row-tag" class="pdf-chip-tag">Zeile ${rowNum}</span>`;
+    }
+    if (pdfModalOrder) pdfModalOrder.textContent = orderVal || "—";
+    if (pdfModalDate) pdfModalDate.textContent = dateVal || "—";
+    if (pdfModalRes) {
+      const sName = getStaffName(resVal);
+      pdfModalRes.textContent = resVal ? (sName ? `${resVal} (${sName})` : resVal) : "—";
+    }
+
+    if (pdfColInfo) pdfColInfo.textContent = `${colName} (Spalte ${colIdx})`;
+    if (pdfCurVal) pdfCurVal.textContent = cellVal || "—";
+    if (pdfProblemInfo) {
+      pdfProblemInfo.textContent = (rItem && rItem.message) ? rItem.message : "Manuelle Belegprüfung";
+    }
+    if (pdfBadgeMatch) {
+      pdfBadgeMatch.textContent = match.reason || "Automatisch zugeordnet";
+    }
+
+    const startVal = (rItem && rItem.suggestion) ? rItem.suggestion : (rItem ? rItem.current_value : cellVal);
+    if (pdfInputVal) {
+      pdfInputVal.value = startVal || "";
+    }
+
+    // Vorschläge generieren
+    if (pdfSuggestionsList) {
+      let suggHtml = "";
+      if (rItem && rItem.suggestion) {
+        suggHtml += `<button type="button" class="btn btn-outline btn-sm btn-pdf-quick-sugg" data-val="${escapeHtml(rItem.suggestion)}" style="font-size:0.78rem; font-weight:700; color:#059669; border-color:#059669; background:#ecfdf5;">💡 ${escapeHtml(rItem.suggestion)} übernehmen</button>`;
+      }
+      if (rItem && rItem.candidates && Array.isArray(rItem.candidates)) {
+        rItem.candidates.slice(0, 3).forEach(c => {
+          if (c.value !== rItem.suggestion) {
+            suggHtml += `<button type="button" class="btn btn-secondary btn-sm btn-pdf-quick-sugg" data-val="${escapeHtml(c.value)}" style="font-size:0.75rem;">${escapeHtml(c.value)}</button>`;
+          }
+        });
+      }
+      pdfSuggestionsList.innerHTML = suggHtml || '<span style="font-size:0.78rem; color:var(--text-muted); font-style:italic;">Keine Vorschläge</span>';
+
+      pdfSuggestionsList.querySelectorAll(".btn-pdf-quick-sugg").forEach(btn => {
+        btn.addEventListener("click", () => {
+          if (pdfInputVal) {
+            pdfInputVal.value = btn.dataset.val;
+            pdfInputVal.focus();
+          }
+        });
+      });
+    }
+
+    // Mitarbeiter-Auswahl (wenn Spalte C / Ressourcenspalte)
+    if (pdfStaffSelectArea && pdfStaffSelect) {
+      if (colIdx === resColIdx && state.staffList && state.staffList.length > 0) {
+        let opts = `<option value="">-- Mitarbeiter wählen --</option>`;
+        state.staffList.forEach(s => {
+          opts += `<option value="${escapeHtml(s.resource)}">${escapeHtml(s.resource)} - ${escapeHtml(s.name)}</option>`;
+        });
+        pdfStaffSelect.innerHTML = opts;
+        pdfStaffSelectArea.classList.remove("hidden");
+        pdfStaffSelect.onchange = () => {
+          if (pdfStaffSelect.value && pdfInputVal) {
+            pdfInputVal.value = pdfStaffSelect.value;
+            pdfInputVal.focus();
+          }
+        };
+      } else {
+        pdfStaffSelectArea.classList.add("hidden");
+      }
+    }
+
+    if (modalPdfViewer) {
+      modalPdfViewer.classList.remove("hidden");
+    }
+
+    // PDF-Seite zeichnen
+    setTimeout(() => {
+      renderActivePdfPage();
+      if (pdfInputVal) pdfInputVal.focus();
+    }, 50);
+  }
+
+  function closePdfViewerModal() {
+    if (modalPdfViewer) {
+      modalPdfViewer.classList.add("hidden");
+    }
+    if (currentPdfRenderTask) {
+      try {
+        currentPdfRenderTask.cancel();
+      } catch(e) {}
+      currentPdfRenderTask = null;
+    }
+    state.activePdfViewer = null;
+  }
+
+  function setupPdfViewerControls() {
+    if (btnClosePdfModal) btnClosePdfModal.onclick = closePdfViewerModal;
+    if (btnPdfJustClose) btnPdfJustClose.onclick = closePdfViewerModal;
+
+    if (btnPdfPrev) {
+      btnPdfPrev.onclick = () => {
+        if (!state.activePdfViewer) return;
+        if (state.activePdfViewer.pageNum > 1) {
+          state.activePdfViewer.pageNum--;
+          renderActivePdfPage();
+        }
+      };
+    }
+
+    if (btnPdfNext) {
+      btnPdfNext.onclick = () => {
+        if (!state.activePdfViewer) return;
+        const pdfItem = state.uploadedPdfs[state.activePdfViewer.pdfIdx];
+        if (pdfItem && state.activePdfViewer.pageNum < pdfItem.numPages) {
+          state.activePdfViewer.pageNum++;
+          renderActivePdfPage();
+        }
+      };
+    }
+
+    if (pdfSelectDoc) {
+      pdfSelectDoc.onchange = () => {
+        if (!state.activePdfViewer) return;
+        state.activePdfViewer.pdfIdx = parseInt(pdfSelectDoc.value, 10) || 0;
+        state.activePdfViewer.pageNum = 1;
+        renderActivePdfPage();
+      };
+    }
+
+    if (btnPdfZoomIn) {
+      btnPdfZoomIn.onclick = () => {
+        if (!state.activePdfViewer) return;
+        state.activePdfViewer.zoomScale = Math.min(state.activePdfViewer.zoomScale + 0.25, 3.5);
+        renderActivePdfPage();
+      };
+    }
+
+    if (btnPdfZoomOut) {
+      btnPdfZoomOut.onclick = () => {
+        if (!state.activePdfViewer) return;
+        state.activePdfViewer.zoomScale = Math.max(state.activePdfViewer.zoomScale - 0.25, 0.5);
+        renderActivePdfPage();
+      };
+    }
+
+    if (btnPdfFit) {
+      btnPdfFit.onclick = () => {
+        if (!state.activePdfViewer || !pdfCanvasPane) return;
+        const w = pdfCanvasPane.clientWidth - 50;
+        state.activePdfViewer.zoomScale = Math.max(0.6, Math.min(2.0, w / 600));
+        renderActivePdfPage();
+      };
+    }
+
+    if (btnPdfSaveAndClose) {
+      btnPdfSaveAndClose.onclick = () => {
+        if (!state.activePdfViewer) return;
+        const { rowNum, colIdx, resultId, rItem } = state.activePdfViewer;
+        const newVal = pdfInputVal ? pdfInputVal.value.trim() : "";
+
+        saveCellCorrection(rowNum, colIdx, newVal);
+        if (rItem) {
+          rItem.current_value = newVal;
+          rItem.is_corrected = (newVal !== rItem.original_value);
+        }
+        state.appliedCorrections[resultId] = newVal;
+
+        renderResultsTable();
+        updateFilterCounts(state.allResults);
+        if (state.timesheetData) renderTimesheetMatrix();
+        renderFullExcelTable();
+
+        closePdfViewerModal();
+        showToast(`✅ Zeile ${rowNum} erfolgreich korrigiert ("${newVal}"). Beleg-Fenster geschlossen.`);
+      };
+    }
+
+    if (pdfInputVal) {
+      pdfInputVal.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (btnPdfSaveAndClose) btnPdfSaveAndClose.click();
+        } else if (e.key === "Escape") {
+          closePdfViewerModal();
+        }
+      });
+    }
+
+    if (btnModalOpenPdf) {
+      btnModalOpenPdf.onclick = () => {
+        if (state.modalEditRowIdx) {
+          const resCol = parseInt(selectTsResourceCol?.value, 10) || 3;
+          openPdfViewerModal(state.modalEditRowIdx, resCol, `${state.modalEditRowIdx}_${resCol}`);
+        }
+      };
+    }
+  }
 
   function setupDropZone(dropZone, fileInput, onFileLoaded) {
     if (!dropZone || !fileInput) return;
@@ -2333,6 +2929,7 @@ document.addEventListener("DOMContentLoaded", () => {
               placeholder="Nummer eintragen..."
               title="Nummer manuell anpassen und Enter drücken">
             <button class="btn-save-manual" data-id="${r.id}" title="Händisch speichern">💾 Speichern</button>
+            <button type="button" class="btn btn-outline btn-sm btn-open-pdf-row" data-id="${r.id}" data-row="${r.row}" data-col="${r.col_idx}" title="Original-Beleg (PDF) für diese Zeile anzeigen">📄 Beleg</button>
             <button type="button" class="btn-delete-entry" data-id="${r.id}" title="Diesen fehlerhaften Eintrag / Zeile löschen">🗑️ Löschen</button>
           </div>
           ${isRefCandidate ? `
@@ -2427,6 +3024,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (targetItem) {
           openDeleteEntryModal(targetItem);
         }
+      });
+    });
+
+    // Event Listener für PDF-Beleg anzeigen
+    resultsTbody.querySelectorAll(".btn-open-pdf-row").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        const rowNum = parseInt(btn.dataset.row, 10);
+        const colIdx = parseInt(btn.dataset.col, 10);
+        openPdfViewerModal(rowNum, colIdx, id);
       });
     });
 
@@ -4126,6 +4733,7 @@ document.addEventListener("DOMContentLoaded", () => {
       tbodyHtml += `<td class="col-sticky-row">
         <span>${r}</span> ${rowIndicator}
         <button type="button" class="btn-row-add-below" data-row="${r}" title="Zeile darunter einfügen (Werte als Vorlage übernehmen)">➕</button>
+        <button type="button" class="btn-fulltable-open-pdf" data-row="${r}" title="Original-Beleg (PDF) für diese Zeile anzeigen" style="border:none; background:transparent; cursor:pointer; font-size:0.85rem; padding:1px 3px;">📄</button>
       </td>`;
 
       for (let c = 1; c <= colCount; c++) {
@@ -4192,6 +4800,16 @@ document.addEventListener("DOMContentLoaded", () => {
         const rIdx = parseInt(btn.dataset.row, 10);
         state.modalCaller = "fulltable";
         openInsertRowModal(rIdx);
+      });
+    });
+
+    // Event-Listener für Beleg anzeigen
+    fulltableTbody.querySelectorAll(".btn-fulltable-open-pdf").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const rIdx = parseInt(btn.dataset.row, 10);
+        const resCol = parseInt(selectTsResourceCol?.value, 10) || 3;
+        openPdfViewerModal(rIdx, resCol, `${rIdx}_${resCol}`);
       });
     });
 
@@ -4710,6 +5328,9 @@ document.addEventListener("DOMContentLoaded", () => {
             </td>
             <td style="padding: 0.65rem 0.75rem; text-align: center; vertical-align: middle; white-space: nowrap;">
               <div style="display: flex; gap: 0.4rem; justify-content: center;">
+                <button type="button" class="btn btn-outline btn-sm btn-day-open-pdf" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem; border-color: #818cf8; color: #4338ca; background: #f5f3ff;" title="Original-Beleg (PDF) für diese Zeile anzeigen">
+                  📄 Beleg
+                </button>
                 <button type="button" class="btn btn-primary btn-sm btn-day-edit-row" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem;" title="Zeile ${m.rowIdx} bearbeiten">
                   ✏️ Bearbeiten
                 </button>
@@ -4722,6 +5343,15 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
       });
       chooseBookingList.innerHTML = tbodyHtml;
+
+      // Event Listener für Beleg anzeigen
+      chooseBookingList.querySelectorAll(".btn-day-open-pdf").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const rIdx = parseInt(btn.dataset.row, 10);
+          const resCol = parseInt(selectTsResourceCol?.value, 10) || 3;
+          openPdfViewerModal(rIdx, resCol, `${rIdx}_${resCol}`);
+        });
+      });
 
       // Event Listener für Bearbeiten
       chooseBookingList.querySelectorAll(".btn-day-edit-row").forEach(btn => {

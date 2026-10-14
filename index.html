@@ -15,6 +15,13 @@
       document.write('<script src="libs/exceljs.min.js"><\/script>');
     }
   </script>
+  <!-- PDF.js für Anzeige und Prüfung von Original-Belegen -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (typeof pdfjsLib === "undefined") {
+      document.write('<script src="libs/pdf.min.js"><\/script>');
+    }
+  </script>
 </head>
 <body>
   <!-- Kopfzeile -->
@@ -132,6 +139,34 @@
                   <button type="button" id="btn-change-staff" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.8rem;">Neu laden / Ändern</button>
                   <button type="button" id="btn-clear-staff" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem; color: #dc2626;" title="Aus dem Browser löschen">Löschen</button>
                   <button type="button" id="btn-download-staff-template" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem;" title="Muster-Excel herunterladen">Muster-Vorlage</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Original-Belege / Stundenzettel (PDF) - Optional -->
+          <div id="drop-pdf" class="drop-card drop-pdf" style="margin-top: 0.85rem;">
+            <div class="drop-card-header">
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span class="step-badge" style="background: #6366f1;">📄</span>
+                <h3>Original-Belege / Stundenzettel (.pdf)</h3>
+              </div>
+              <span id="pdf-storage-badge" class="badge badge-leer-ok">Optional</span>
+            </div>
+            <div class="drop-zone-content" id="pdf-drop-zone-content">
+              <div class="drop-icon">📑</div>
+              <p class="drop-text"><strong>PDFs hier hineinziehen</strong> oder klicken</p>
+              <p class="drop-subtext">Scans / Stundenzettel (eine oder mehrere PDFs gleichzeitig)</p>
+              <input type="file" id="input-pdf" class="file-input" accept=".pdf" multiple>
+            </div>
+            <div id="pdf-file-info" class="file-info hidden">
+              <div class="file-info-icon" style="color: #6366f1;">📄</div>
+              <div class="file-info-text">
+                <strong id="pdf-info-title">0 PDFs geladen</strong>
+                <p id="pdf-info-detail" style="font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 6px 0;">Bereit zur Beleg-Prüfung</p>
+                <div class="pdf-actions-row" style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                  <button type="button" id="btn-add-more-pdf" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.8rem;">+ Weitere PDFs</button>
+                  <button type="button" id="btn-clear-pdf" class="btn btn-outline btn-sm" style="padding: 2px 8px; font-size: 0.8rem; color: #dc2626;" title="PDFs entfernen">Löschen</button>
                 </div>
               </div>
             </div>
@@ -486,7 +521,10 @@
         <!-- Bearbeitungs-Hinweis (nur im Edit-Modus aktiv) -->
         <div id="modal-edit-banner" class="hidden" style="margin-bottom: 0.85rem; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 0.65rem 0.9rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
           <span style="font-size: 0.85rem; color: #92400e;">✏️ <strong>Bestehende Zeile bearbeiten:</strong> Sie ändern direkt den Datensatz in <strong id="modal-edit-row-num">Zeile 1</strong>.</span>
-          <button type="button" id="btn-switch-to-insert" class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 3px 8px;">➕ Stattdessen neue Zeile nachtragen</button>
+          <div style="display: flex; gap: 0.4rem; align-items: center;">
+            <button type="button" id="btn-modal-open-pdf" class="btn btn-outline btn-sm" style="font-size: 0.75rem; padding: 3px 8px; border-color: #818cf8; color: #4338ca; background: #f5f3ff;" title="Zugehörigen PDF-Beleg anzeigen">📄 Beleg anzeigen</button>
+            <button type="button" id="btn-switch-to-insert" class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 3px 8px;">➕ Stattdessen neue Zeile nachtragen</button>
+          </div>
         </div>
 
         <!-- Bereiche nur für Neu-Einfügen (im Edit-Modus ausgeblendet) -->
@@ -664,6 +702,110 @@
       </div>
       <div class="modal-footer" style="justify-content: flex-end;">
         <button type="button" id="btn-cancel-delete" class="btn btn-secondary btn-sm">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Original-Beleg (PDF) Vorschau & Schnell-Korrektur -->
+  <div id="modal-pdf-viewer" class="modal-overlay hidden">
+    <div class="modal-dialog pdf-viewer-modal-dialog">
+      <!-- Header -->
+      <div class="pdf-viewer-header">
+        <div class="pdf-header-info">
+          <span style="font-size: 1.5rem;">📄</span>
+          <div>
+            <h3 id="pdf-modal-title">Original-Beleg (PDF) – <span id="pdf-modal-row-tag" class="pdf-chip-tag">Zeile 1</span></h3>
+            <p id="pdf-modal-subtitle" style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">
+              Auftrag: <strong id="pdf-modal-order">-</strong> • Datum: <strong id="pdf-modal-date">-</strong> • Ressource: <strong id="pdf-modal-res">-</strong>
+            </p>
+          </div>
+        </div>
+
+        <!-- Controls: PDF-Wahl, Seiten blättern, Zoom -->
+        <div class="pdf-header-controls">
+          <select id="pdf-select-doc" class="form-select form-select-sm" style="max-width: 200px;" title="PDF-Datei auswählen"></select>
+          
+          <div style="display: flex; align-items: center; gap: 4px; background: white; border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px;">
+            <button type="button" id="btn-pdf-prev" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" title="Vorherige Seite">◀</button>
+            <span id="pdf-page-indicator" style="font-weight: 600; font-size: 0.82rem; min-width: 80px; text-align: center;">Seite 1 / 1</span>
+            <button type="button" id="btn-pdf-next" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" title="Nächste Seite">▶</button>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 4px; background: white; border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px;">
+            <button type="button" id="btn-pdf-zoom-out" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" title="Verkleinern">➖</button>
+            <span id="pdf-zoom-level" style="font-size: 0.8rem; font-weight: 600; min-width: 44px; text-align: center;">120%</span>
+            <button type="button" id="btn-pdf-zoom-in" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" title="Vergrößern">➕</button>
+            <button type="button" id="btn-pdf-fit" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" title="Breite anpassen">↔</button>
+          </div>
+
+          <button type="button" id="btn-close-pdf-modal" class="modal-close-btn" title="Schließen">&times;</button>
+        </div>
+      </div>
+
+      <!-- Split Body: Links Canvas, Rechts Schnell-Korrektur -->
+      <div class="pdf-split-container">
+        <!-- Canvas Pane -->
+        <div class="pdf-canvas-pane" id="pdf-canvas-pane">
+          <canvas id="pdf-canvas"></canvas>
+        </div>
+
+        <!-- Schnell-Korrektur Panel -->
+        <div class="pdf-side-panel">
+          <div>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+              <h4 style="font-size: 0.95rem; font-weight: 700; color: #1e293b; margin: 0;">⚡ Beleg-Prüfung &amp; Korrektur</h4>
+              <span id="pdf-badge-match" class="badge badge-success" style="font-size: 0.72rem;">Automatisch zugeordnet</span>
+            </div>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">
+              Prüfen Sie links den handschriftlichen Original-Beleg und passen Sie die Eingabe direkt hier an:
+            </p>
+          </div>
+
+          <!-- Problem-Zusammenfassung -->
+          <div class="pdf-info-card">
+            <div class="pdf-info-row">
+              <span style="color: var(--text-muted);">Strittige Spalte:</span>
+              <strong id="pdf-col-info">Spalte C (Resourcen Nummer)</strong>
+            </div>
+            <div class="pdf-info-row">
+              <span style="color: var(--text-muted);">Aktueller Wert (KI):</span>
+              <strong id="pdf-cur-val" style="color: #dc2626; font-family: monospace;">-</strong>
+            </div>
+            <div class="pdf-info-row">
+              <span style="color: var(--text-muted);">Festgestelltes Problem:</span>
+              <span id="pdf-problem-info" style="color: #d97706; font-weight: 600;">-</span>
+            </div>
+          </div>
+
+          <!-- Eingabefeld für den neuen Wert -->
+          <div>
+            <label for="pdf-input-val" style="font-size: 0.82rem; font-weight: 600; display: block; margin-bottom: 0.35rem;">
+              Neuer / korrigierter Wert:
+            </label>
+            <input type="text" id="pdf-input-val" class="form-input" style="font-size: 1.15rem; font-weight: 700; text-align: center; letter-spacing: 0.05em; border-color: #6366f1;">
+          </div>
+
+          <!-- Vorschläge / Klick-Korrekturen -->
+          <div id="pdf-suggestions-area">
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.3rem;">Korrektur-Vorschlag (1-Klick):</div>
+            <div id="pdf-suggestions-list" style="display: flex; flex-wrap: wrap; gap: 0.35rem;"></div>
+          </div>
+
+          <!-- Mitarbeiter Schnell-Auswahl (falls vorhanden) -->
+          <div id="pdf-staff-select-area" class="hidden">
+            <label for="pdf-staff-select" style="font-size: 0.78rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Oder Mitarbeiter aus Stammdaten wählen:</label>
+            <select id="pdf-staff-select" class="form-select form-select-sm"></select>
+          </div>
+
+          <div style="margin-top: auto; display: flex; flex-direction: column; gap: 0.5rem;">
+            <button type="button" id="btn-pdf-save-and-close" class="btn btn-success" style="padding: 0.75rem 1rem; font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; justify-content: center; gap: 0.4rem;">
+              <span>💾</span> <span>Wert speichern &amp; Beleg schließen</span>
+            </button>
+            <button type="button" id="btn-pdf-just-close" class="btn btn-secondary btn-sm" style="text-align: center;">
+              Abbrechen / Beleg schließen
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
