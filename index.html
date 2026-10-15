@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Excel-Prüfer & Korrektur-Assistent (Web)</title>
-  <link rel="stylesheet" href="style.css?v=4.8">
+  <link rel="stylesheet" href="style.css?v=4.9">
   <!-- ExcelJS für 100% clientseitige Excel-Verarbeitung im Browser -->
   <script src="libs/exceljs.min.js"></script>
   <script>
@@ -36,7 +36,7 @@
       <div class="logo-area">
         <div class="logo-icon">📊</div>
         <div>
-          <h1 class="logo-title">Excel-Prüfer &amp; Korrektur-Assistent <span style="font-size: 0.75rem; background: #10b981; color: white; padding: 2px 8px; border-radius: 9999px; margin-left: 6px; font-weight: 700; vertical-align: middle;">Version 4.8</span></h1>
+          <h1 class="logo-title">Excel-Prüfer &amp; Korrektur-Assistent <span style="font-size: 0.75rem; background: #10b981; color: white; padding: 2px 8px; border-radius: 9999px; margin-left: 6px; font-weight: 700; vertical-align: middle;">Version 4.9</span></h1>
           <p class="logo-subtitle">Automatische Erkennung von Zahlendrehern, Tippfehlern &amp; 1-Klick-Korrektur</p>
         </div>
       </div>
@@ -605,91 +605,81 @@
 
   <!-- Modal: Tagesübersicht mit allen Buchungen des Tages -->
   <div id="modal-choose-booking" class="modal-backdrop hidden">
-    <div class="modal-dialog modal-day-overview" style="max-width: 960px; width: 95%;">
-      <div class="modal-header" style="background: #f8fafc; border-bottom: 1px solid var(--border);">
-        <div style="display: flex; align-items: center; gap: 0.75rem;">
-          <span style="font-size: 1.5rem;">📅</span>
+    <div class="modal-dialog modal-day-overview">
+      <div class="modal-header" style="background: #f8fafc; border-bottom: 1px solid var(--border); padding: 0.65rem 1.25rem;">
+        <div style="display: flex; align-items: center; gap: 0.65rem;">
+          <span style="font-size: 1.35rem;">📅</span>
           <div>
-            <h3 class="modal-title" id="choose-booking-title">Tagesübersicht</h3>
-            <p id="choose-booking-subtitle" style="font-size: 0.85rem; color: var(--text-muted); margin: 0;"></p>
+            <h3 class="modal-title" id="choose-booking-title" style="font-size: 1.12rem; margin: 0;">Tagesübersicht</h3>
+            <p id="choose-booking-subtitle" style="font-size: 0.82rem; color: var(--text-muted); margin: 0;"></p>
           </div>
         </div>
         <button type="button" id="btn-close-choose-modal" class="modal-close-btn" title="Schließen">&times;</button>
       </div>
-      <div class="modal-body" style="padding: 1.25rem;">
-        <!-- Filter Tabs / Toggle oben: Nur dieser Mitarbeiter vs Alle Mitarbeiter an diesem Tag -->
-        <div id="day-overview-tabs" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
-          <div style="display: flex; gap: 0.4rem;" id="day-overview-scope-buttons">
-            <button type="button" id="btn-scope-employee" class="btn btn-sm btn-primary" style="font-weight: 600;">
+      <div class="modal-body">
+        <!-- Filter Tabs & Tagessumme oben (Kompakt) -->
+        <div id="day-overview-tabs" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.45rem; flex-wrap: wrap; gap: 0.4rem;">
+          <div style="display: flex; gap: 0.35rem;" id="day-overview-scope-buttons">
+            <button type="button" id="btn-scope-employee" class="btn btn-sm btn-primary" style="font-weight: 600; padding: 3px 10px; font-size: 0.82rem;">
               👤 <span id="scope-employee-name">Mitarbeiter</span> (<span id="scope-employee-count">0</span>)
             </button>
-            <button type="button" id="btn-scope-all" class="btn btn-sm btn-secondary">
+            <button type="button" id="btn-scope-all" class="btn btn-sm btn-secondary" style="padding: 3px 10px; font-size: 0.82rem;">
               🏢 Alle Mitarbeiter an diesem Tag (<span id="scope-all-count">0</span>)
             </button>
           </div>
-          <div id="day-overview-total-badge" style="background: #e0f2fe; color: #0369a1; padding: 0.35rem 0.85rem; border-radius: 999px; font-weight: 600; font-size: 0.88rem; border: 1px solid #bae6fd;">
-            Gesamt: <span id="day-overview-total-hours">0,00</span> h (<span id="day-overview-count-badge">0</span> Buchungen)
+          <div id="day-overview-total-badge" style="background: #e0f2fe; color: #0369a1; padding: 0.25rem 0.75rem; border-radius: 999px; font-weight: 700; font-size: 0.84rem; border: 1px solid #bae6fd;">
+            Tagessumme: <span id="day-overview-total-hours">0,00</span> h (<span id="day-overview-count-badge">0</span> Buchungen)
           </div>
         </div>
 
-        <!-- Zwei-Mann-Team / Partner-Kopplung Leiste -->
-        <div id="day-partner-coupling-bar" style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 0.55rem 0.85rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
-          <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-            <span style="font-size: 1.2rem;">🔗</span>
-            <div>
-              <div style="font-weight: 700; font-size: 0.88rem; color: #166534; display: flex; align-items: center; gap: 0.4rem;">
-                <span>Zwei-Mann-Team / Zeiten synchronisieren</span>
-                <span id="partner-coupling-badge" class="badge" style="background: #dcfce7; color: #15803d; font-size: 0.72rem; border: 1px solid #86efac; display: none;">0 gekoppelt</span>
-              </div>
-              <div id="partner-coupling-status-text" style="font-size: 0.8rem; color: #15803d; margin-top: 1px;">
-                Wählen Sie per Häkchen die Zeilen aus, die gemeinsam angepasst werden sollen.
-              </div>
-            </div>
+        <!-- Zwei-Mann-Team / Partner-Kopplung Leiste (Kompakt) -->
+        <div id="day-partner-coupling-bar" style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 0.35rem 0.75rem; margin-bottom: 0.45rem; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+            <span style="font-size: 1.05rem;">🔗</span>
+            <strong style="font-size: 0.82rem; color: #166534;">Zwei-Mann-Team:</strong>
+            <span id="partner-coupling-badge" class="badge" style="background: #dcfce7; color: #15803d; font-size: 0.7rem; border: 1px solid #86efac; display: none;">0 gekoppelt</span>
+            <span id="partner-coupling-status-text" style="font-size: 0.78rem; color: #15803d;">Häkchen setzen, um Zeiten gemeinsam anzupassen.</span>
           </div>
-          <div style="display: flex; align-items: center; gap: 0.4rem;">
-            <label for="select-day-partner" style="font-size: 0.8rem; font-weight: 600; color: #166534; margin: 0; white-space: nowrap;">Partner hinzuziehen:</label>
-            <select id="select-day-partner" class="form-select form-select-sm" style="max-width: 230px; font-size: 0.82rem; border-color: #86efac; background-color: #fff;" title="Weiteren Mitarbeiter zu diesem Tag hinzufügen"></select>
+          <div style="display: flex; align-items: center; gap: 0.35rem;">
+            <label for="select-day-partner" style="font-size: 0.78rem; font-weight: 600; color: #166534; margin: 0; white-space: nowrap;">Partner hinzuziehen:</label>
+            <select id="select-day-partner" class="form-select form-select-sm" style="max-width: 220px; font-size: 0.78rem; padding: 2px 6px; height: 28px; border-color: #86efac; background-color: #fff;" title="Weiteren Mitarbeiter zu diesem Tag hinzufügen"></select>
           </div>
         </div>
 
-        <div style="font-size: 0.84rem; color: #64748b; margin-bottom: 0.65rem;">
-          💡 Passen Sie Arbeitszeiten direkt im Feld an oder koppeln Sie zwei Mitarbeiter per Häkchen. Nach Abschluss aller Änderungen klicken Sie unten auf <strong>Änderungen en bloc übernehmen</strong>.
-        </div>
-
-        <!-- Tabellen-Container für alle Buchungen dieses Tages -->
-        <div style="max-height: 52vh; overflow-y: auto; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: #fff;">
-          <table class="table-results" id="table-day-overview" style="width: 100%; border-collapse: collapse; font-size: 0.88rem; min-width: 680px;">
+        <!-- Tabellen-Container für alle Buchungen dieses Tages (voller Platz & Sticky Header) -->
+        <div class="day-overview-table-wrapper">
+          <table class="table-results" id="table-day-overview" style="width: 100%; border-collapse: collapse; font-size: 0.84rem; min-width: 680px;">
             <thead>
               <tr style="background: #f1f5f9; text-align: left; border-bottom: 1px solid var(--border);">
-                <th style="padding: 0.55rem 0.4rem; width: 44px; text-align: center;" title="Zeilen koppeln / Zeiten synchron anpassen">🔗</th>
-                <th style="padding: 0.55rem 0.6rem; width: 68px; text-align: center;"># Zeile</th>
-                <th id="th-day-employee" style="padding: 0.55rem 0.75rem; min-width: 140px;">Mitarbeiter / Ressource</th>
-                <th style="padding: 0.55rem 0.6rem; width: 130px; text-align: right;">Stunden (h)</th>
-                <th style="padding: 0.55rem 0.75rem;">Buchungsdetails / Spalten</th>
-                <th style="padding: 0.55rem 0.6rem; width: 175px; text-align: center;">Aktionen</th>
+                <th style="padding: 0.45rem 0.35rem; width: 42px; text-align: center;" title="Zeilen koppeln / Zeiten synchron anpassen">🔗</th>
+                <th style="padding: 0.45rem 0.5rem; width: 62px; text-align: center;"># Zeile</th>
+                <th id="th-day-employee" style="padding: 0.45rem 0.65rem; min-width: 130px;">Mitarbeiter / Ressource</th>
+                <th style="padding: 0.45rem 0.5rem; width: 115px; text-align: right;">Stunden (h)</th>
+                <th style="padding: 0.45rem 0.65rem;">Buchungsdetails / Spalten</th>
+                <th style="padding: 0.45rem 0.5rem; width: 165px; text-align: center;">Aktionen</th>
               </tr>
             </thead>
             <tbody id="choose-booking-list">
               <!-- Dynamisch generiert -->
             </tbody>
-            <tfoot id="choose-booking-tfoot" style="background: #f8fafc; border-top: 2px solid var(--border); font-weight: 600;">
+            <tfoot id="choose-booking-tfoot">
               <!-- Dynamisch generiert -->
             </tfoot>
           </table>
         </div>
       </div>
-      <div class="modal-footer" style="justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; background: #f8fafc; border-top: 1px solid var(--border); padding: 0.85rem 1.25rem;">
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
-          <button type="button" id="btn-choose-add-new" class="btn btn-secondary btn-sm" style="background: #f1f5f9; border-color: #cbd5e1; color: #334155;">
+      <div class="modal-footer" style="justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; background: #f8fafc; border-top: 1px solid var(--border); padding: 0.65rem 1.25rem;">
+        <div style="display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center;">
+          <button type="button" id="btn-choose-add-new" class="btn btn-secondary btn-sm" style="background: #f1f5f9; border-color: #cbd5e1; color: #334155; padding: 4px 10px; font-size: 0.82rem;">
             ➕ Weitere Buchung nachtragen
           </button>
-          <button type="button" id="btn-choose-drilldown-full" class="btn btn-secondary btn-sm" title="Wechselt zur Gesamttabelle mit diesem Tag und Mitarbeiter">
+          <button type="button" id="btn-choose-drilldown-full" class="btn btn-secondary btn-sm" title="Wechselt zur Gesamttabelle mit diesem Tag und Mitarbeiter" style="padding: 4px 10px; font-size: 0.82rem;">
             🔍 In Gesamttabelle anzeigen
           </button>
         </div>
-        <div style="display: flex; gap: 0.6rem; align-items: center;">
-          <button type="button" id="btn-close-choose" class="btn btn-secondary btn-sm">Abbrechen / Schließen</button>
-          <button type="button" id="btn-save-all-day-changes" class="btn btn-success" style="padding: 0.6rem 1.25rem; font-weight: 700; font-size: 0.95rem; box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.25); display: flex; align-items: center; gap: 0.45rem;">
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <button type="button" id="btn-close-choose" class="btn btn-secondary btn-sm" style="padding: 4px 12px; font-size: 0.82rem;">Abbrechen / Schließen</button>
+          <button type="button" id="btn-save-all-day-changes" class="btn btn-success" style="padding: 0.5rem 1.25rem; font-weight: 700; font-size: 0.92rem; box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.25); display: flex; align-items: center; gap: 0.45rem;">
             <span>💾</span> <span>Änderungen en bloc übernehmen</span> <span id="btn-save-day-badge" class="badge" style="background: #047857; color: white; border-radius: 999px; padding: 2px 7px; font-size: 0.78rem;">0</span>
           </button>
         </div>
@@ -850,7 +840,7 @@
   <div id="toast" class="toast hidden"></div>
 
   <!-- Skripte -->
-  <script src="engine.js?v=4.8"></script>
-  <script src="app.js?v=4.8"></script>
+  <script src="engine.js?v=4.9"></script>
+  <script src="app.js?v=4.9"></script>
 </body>
 </html>

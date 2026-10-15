@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.8 GELADEN (Zwei-Mann-Team & En-Bloc-Korrektur) - 2026-10-15 ***");
+console.log("[APP.JS] *** VERSION 4.9 GELADEN (Große Tagesübersicht & Kompaktlayout) - 2026-10-15 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -5570,7 +5570,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (val) {
             const hCell = headerRow.getCell(c);
             const hName = WebExcelEngine.extractCellValue(hCell.value, hCell) || `Spalte ${getColLetter(c)}`;
-            infoParts.push(`<span style="background: #f1f5f9; padding: 1px 6px; border-radius: 4px; border: 1px solid #e2e8f0; display: inline-block; margin: 1px 2px;"><strong style="color: #475569;">${escapeHtml(hName)}:</strong> ${escapeHtml(val)}</span>`);
+            infoParts.push(`<span style="background: #f8fafc; padding: 1px 5px; border-radius: 4px; border: 1px solid #e2e8f0; display: inline-block; margin: 1px; font-size: 0.76rem; white-space: nowrap;"><strong style="color: #475569;">${escapeHtml(hName)}:</strong> ${escapeHtml(val)}</span>`);
           }
         }
       }
@@ -5867,39 +5867,39 @@ document.addEventListener("DOMContentLoaded", () => {
 
         tbodyHtml += `
           <tr style="border-bottom: 1px solid #e2e8f0;" class="${rowClasses}" id="day-row-${m.rowIdx}">
-            <td style="padding: 0.55rem 0.4rem; text-align: center; vertical-align: middle;">
+            <td style="padding: 0.35rem 0.35rem; text-align: center; vertical-align: middle;">
               <input type="checkbox" class="cb-couple-row" data-row="${m.rowIdx}" ${isCoupled ? "checked" : ""} title="Zeile ${m.rowIdx} mit Partner koppeln (Zeiten synchronisieren)">
             </td>
-            <td style="padding: 0.55rem 0.6rem; text-align: center; vertical-align: middle;">
-              <span class="badge" style="background: #e2e8f0; color: #334155; font-weight: 700; font-size: 0.82rem;">#${m.rowIdx}</span>
+            <td style="padding: 0.35rem 0.45rem; text-align: center; vertical-align: middle;">
+              <span class="badge" style="background: #e2e8f0; color: #334155; font-weight: 700; font-size: 0.8rem; padding: 2px 6px;">#${m.rowIdx}</span>
             </td>
-            <td style="padding: 0.55rem 0.75rem; vertical-align: middle;">
-              <div style="font-weight: 600; color: #0f172a;">${empLabel}</div>
-              <div style="display: flex; gap: 4px; margin-top: 3px;">
-                <span class="badge-coupled ${isCoupled ? "" : "hidden"}" id="badge-coupled-${m.rowIdx}">🔗 Gekoppelt</span>
-                <span class="badge-modified ${isModified ? "" : "hidden"}" id="badge-modified-${m.rowIdx}">✏️ Geändert</span>
+            <td style="padding: 0.35rem 0.55rem; vertical-align: middle;">
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <span style="font-weight: 600; color: #0f172a; font-size: 0.88rem;">${empLabel}</span>
+                <span class="badge-coupled ${isCoupled ? "" : "hidden"}" id="badge-coupled-${m.rowIdx}" style="padding: 1px 5px; font-size: 0.7rem;">🔗 Gekoppelt</span>
+                <span class="badge-modified ${isModified ? "" : "hidden"}" id="badge-modified-${m.rowIdx}" style="padding: 1px 5px; font-size: 0.7rem;">✏️ Geändert</span>
               </div>
             </td>
-            <td style="padding: 0.55rem 0.6rem; text-align: right; vertical-align: middle;">
-              <div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px;">
-                <input type="number" step="0.25" min="0" max="24" class="form-input day-hours-input" data-row="${m.rowIdx}" data-orig="${m.hours}" value="${valFormatted}" title="Arbeitszeit für Zeile ${m.rowIdx} anpassen" style="width: 82px; padding: 4px 6px; text-align: right; font-weight: 700; font-size: 0.95rem;">
-                <span style="font-weight: 600; color: #475569; font-size: 0.82rem;">h</span>
+            <td style="padding: 0.35rem 0.45rem; text-align: right; vertical-align: middle;">
+              <div style="display: flex; align-items: center; justify-content: flex-end; gap: 3px;">
+                <input type="number" step="0.25" min="0" max="24" class="form-input day-hours-input" data-row="${m.rowIdx}" data-orig="${m.hours}" value="${valFormatted}" title="Arbeitszeit für Zeile ${m.rowIdx} anpassen" style="width: 74px; padding: 2px 5px; text-align: right; font-weight: 700; font-size: 0.9rem; height: 28px;">
+                <span style="font-weight: 600; color: #475569; font-size: 0.8rem;">h</span>
               </div>
             </td>
-            <td style="padding: 0.55rem 0.75rem; vertical-align: middle;">
-              <div style="font-size: 0.85rem; color: #334155; line-height: 1.45;">
-                ${m.info ? m.info : '<span style="color:var(--text-muted); font-style:italic;">Keine Zusatzdaten</span>'}
+            <td style="padding: 0.35rem 0.55rem; vertical-align: middle;">
+              <div style="font-size: 0.8rem; color: #334155; line-height: 1.35; max-height: 42px; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 2px;">
+                ${m.info ? m.info : '<span style="color:var(--text-muted); font-style:italic; font-size:0.75rem;">Keine Zusatzdaten</span>'}
               </div>
             </td>
-            <td style="padding: 0.55rem 0.6rem; text-align: center; vertical-align: middle; white-space: nowrap;">
-              <div style="display: flex; gap: 0.4rem; justify-content: center;">
-                <button type="button" class="btn btn-outline btn-sm btn-day-open-pdf" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem; border-color: #818cf8; color: #4338ca; background: #f5f3ff;" title="Original-Beleg (PDF) für diese Zeile anzeigen">
+            <td style="padding: 0.35rem 0.45rem; text-align: center; vertical-align: middle; white-space: nowrap;">
+              <div style="display: flex; gap: 0.3rem; justify-content: center;">
+                <button type="button" class="btn btn-outline btn-sm btn-day-open-pdf" data-row="${m.rowIdx}" style="padding: 2px 7px; font-size: 0.76rem; border-color: #818cf8; color: #4338ca; background: #f5f3ff;" title="Original-Beleg (PDF) für diese Zeile anzeigen">
                   📄 Beleg
                 </button>
-                <button type="button" class="btn btn-primary btn-sm btn-day-edit-row" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem;" title="Zeile ${m.rowIdx} bearbeiten">
+                <button type="button" class="btn btn-primary btn-sm btn-day-edit-row" data-row="${m.rowIdx}" style="padding: 2px 7px; font-size: 0.76rem;" title="Zeile ${m.rowIdx} bearbeiten">
                   ✏️ Bearbeiten
                 </button>
-                <button type="button" class="btn btn-danger btn-sm btn-day-delete-row" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem; background: #dc2626; border-color: #dc2626;" title="Zeile ${m.rowIdx} löschen">
+                <button type="button" class="btn btn-danger btn-sm btn-day-delete-row" data-row="${m.rowIdx}" style="padding: 2px 7px; font-size: 0.76rem; background: #dc2626; border-color: #dc2626;" title="Zeile ${m.rowIdx} löschen">
                   🗑️ Löschen
                 </button>
               </div>
@@ -6037,13 +6037,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (chooseBookingTfoot) {
       chooseBookingTfoot.innerHTML = `
         <tr>
-          <td colspan="3" style="padding: 0.65rem 0.75rem; text-align: right;">
+          <td colspan="3" style="padding: 0.4rem 0.65rem; text-align: right;">
             <strong>Gesamtsumme Tag:</strong>
           </td>
-          <td style="padding: 0.65rem 0.6rem; text-align: right;">
+          <td style="padding: 0.4rem 0.5rem; text-align: right;">
             <strong id="day-overview-tfoot-sum" style="color: #0369a1; font-size: 0.95rem;">${formatHoursDe(calcDisplayedTotalHours())} h</strong>
           </td>
-          <td colspan="2" style="padding: 0.65rem 0.75rem; color: var(--text-muted); font-size: 0.82rem;">
+          <td colspan="2" style="padding: 0.4rem 0.65rem; color: var(--text-muted); font-size: 0.8rem;">
             ${matchesToDisplay.length} Buchung(en) in der Ansicht
           </td>
         </tr>

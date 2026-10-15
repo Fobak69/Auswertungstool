@@ -1554,7 +1554,49 @@ body {
 }
 
 .modal-day-overview {
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  max-width: 1250px !important;
+  width: 96vw !important;
+  height: 90vh !important;
+  max-height: 94vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
+}
+
+.modal-day-overview .modal-body {
+  padding: 0.75rem 1.25rem !important;
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  min-height: 0 !important;
+}
+
+.day-overview-table-wrapper {
+  flex: 1 1 auto !important;
+  min-height: 250px !important;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  background: #fff !important;
+  position: relative !important;
+}
+
+.day-overview-table-wrapper thead th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 5 !important;
+  background: #f1f5f9 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.day-overview-table-wrapper tfoot {
+  position: sticky !important;
+  bottom: 0 !important;
+  z-index: 5 !important;
+  background: #f8fafc !important;
+  box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.06);
 }
 
 .ts-date-header-clickable {
