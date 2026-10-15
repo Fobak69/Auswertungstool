@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.7 GELADEN - 2026-10-14 ***");
+console.log("[APP.JS] *** VERSION 4.8 GELADEN (Zwei-Mann-Team & En-Bloc-Korrektur) - 2026-10-15 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
