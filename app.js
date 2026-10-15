@@ -42,6 +42,9 @@ document.addEventListener("DOMContentLoaded", () => {
     highlightEmployeeRes: null,
     activeDeleteTarget: null, // { id, row, col_idx, cell, origVal }
     activeDayOverview: null, // { resource, dateIso, scope }
+    pendingDayChanges: {}, // rowIdx -> string/number
+    coupledRowIndices: new Set(), // Set of rowIdx (numbers)
+    additionalDayPartners: new Set(), // Set of resource strings
     uploadedPdfs: [], // Array von { file, fileName, pdfDoc, numPages, pageTexts }
     activePdfViewer: null // { rowNum, colIdx, resultId, rowData, pdfIdx, page, zoomScale }
   };
@@ -158,6 +161,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const chooseBookingTitle = document.getElementById("choose-booking-title");
   const chooseBookingSubtitle = document.getElementById("choose-booking-subtitle");
   const chooseBookingList = document.getElementById("choose-booking-list");
+  const dayPartnerCouplingBar = document.getElementById("day-partner-coupling-bar");
+  const partnerCouplingBadge = document.getElementById("partner-coupling-badge");
+  const partnerCouplingStatusText = document.getElementById("partner-coupling-status-text");
+  const selectDayPartner = document.getElementById("select-day-partner");
+  const btnSaveAllDayChanges = document.getElementById("btn-save-all-day-changes");
+  const btnSaveDayBadge = document.getElementById("btn-save-day-badge");
 
   // Eintrag / Zeile löschen Modal DOM
   const modalDeleteEntry = document.getElementById("modal-delete-entry");
@@ -1884,6 +1893,9 @@ document.addEventListener("DOMContentLoaded", () => {
       currentPdfRenderTask = null;
     }
     state.activePdfViewer = null;
+    if (state.activeDayOverview && modalChooseBooking) {
+      modalChooseBooking.classList.remove("hidden");
+    }
   }
 
   function setupPdfViewerControls() {
@@ -1973,8 +1985,13 @@ document.addEventListener("DOMContentLoaded", () => {
         if (state.timesheetData) renderTimesheetMatrix();
         renderFullExcelTable();
 
+        const wasDayOverview = state.activeDayOverview;
         closePdfViewerModal();
         showToast(`✅ Zeile ${rowNum} erfolgreich korrigiert ("${newVal}"). Beleg-Fenster geschlossen.`);
+
+        if (wasDayOverview) {
+          openDayOverviewModal(wasDayOverview.resource, wasDayOverview.dateIso, wasDayOverview.scope);
+        }
       };
     }
 
@@ -3081,6 +3098,9 @@ document.addEventListener("DOMContentLoaded", () => {
       modalDeleteEntry.classList.add("hidden");
     }
     state.activeDeleteTarget = null;
+    if (state.modalCaller === "day-overview" && state.activeDayOverview && modalChooseBooking) {
+      modalChooseBooking.classList.remove("hidden");
+    }
   }
 
   function deleteExcelRow(rowIdx) {
@@ -5374,11 +5394,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function closeInsertRowModal() {
     if (modalInsertRow) modalInsertRow.classList.add("hidden");
+    if (state.modalCaller === "day-overview" && state.activeDayOverview && modalChooseBooking) {
+      modalChooseBooking.classList.remove("hidden");
+    }
   }
 
-  function closeChooseBookingModal() {
+  function closeChooseBookingModal(force = false) {
+    if (!force && state.pendingDayChanges && Object.keys(state.pendingDayChanges).length > 0) {
+      if (!confirm("Sie haben noch ungespeicherte Änderungen in dieser Tagesübersicht. Möchten Sie das Fenster wirklich schließen und die Änderungen verwerfen?")) {
+        return false;
+      }
+    }
     if (modalChooseBooking) modalChooseBooking.classList.add("hidden");
     state.activeDayOverview = null;
+    state.pendingDayChanges = {};
+    if (state.coupledRowIndices) state.coupledRowIndices.clear();
+    if (state.additionalDayPartners) state.additionalDayPartners.clear();
+    return true;
   }
 
   // Hilfsfunktion: Ressourcennummer im Dropdown oder als manuelle Nummer sicher einstellen
@@ -5513,9 +5545,14 @@ document.addEventListener("DOMContentLoaded", () => {
       let rHours = 0;
       if (hoursColIdx) {
         const cellKeyHours = `${r}_${hoursColIdx}`;
-        const hVal = (state.appliedCorrections && state.appliedCorrections[cellKeyHours] !== undefined)
-          ? state.appliedCorrections[cellKeyHours]
-          : row.getCell(hoursColIdx).value;
+        let hVal;
+        if (state.pendingDayChanges && state.pendingDayChanges[r] !== undefined) {
+          hVal = state.pendingDayChanges[r];
+        } else if (state.appliedCorrections && state.appliedCorrections[cellKeyHours] !== undefined) {
+          hVal = state.appliedCorrections[cellKeyHours];
+        } else {
+          hVal = row.getCell(hoursColIdx).value;
+        }
         rHours = parseHours(hVal);
       } else {
         rHours = 1;
@@ -5561,8 +5598,15 @@ document.addEventListener("DOMContentLoaded", () => {
   function openDayOverviewModal(resource, dateIso, initialScope) {
     if (!modalChooseBooking || !chooseBookingList) return;
 
+    // Nur bei neuem Tag oder Neustart Änderungen und Kopplungen leeren
+    if (!state.activeDayOverview || state.activeDayOverview.dateIso !== dateIso) {
+      state.pendingDayChanges = {};
+      state.coupledRowIndices = new Set();
+      state.additionalDayPartners = new Set();
+    }
+
     const isAllStaffInitial = (resource === "all" || !resource || initialScope === "all");
-    const currentScope = isAllStaffInitial ? "all" : "employee";
+    const currentScope = isAllStaffInitial ? "all" : (state.activeDayOverview?.scope || "employee");
 
     state.activeDayOverview = { resource, dateIso, scope: currentScope };
 
@@ -5571,7 +5615,24 @@ document.addEventListener("DOMContentLoaded", () => {
     // Alle Buchungen des Tages für alle Mitarbeiter
     const allMatches = findRowsForResourceAndDate("all", dateIso);
 
-    const matchesToDisplay = (currentScope === "all") ? allMatches : empMatches;
+    // Wenn Einzelmitarbeiter: eventuell hinzugezogene Partner mit anzeigen
+    let matchesToDisplay = [];
+    if (currentScope === "all") {
+      matchesToDisplay = [...allMatches];
+    } else {
+      matchesToDisplay = [...empMatches];
+      if (state.additionalDayPartners && state.additionalDayPartners.size > 0) {
+        state.additionalDayPartners.forEach(pRes => {
+          const pMatches = findRowsForResourceAndDate(pRes, dateIso);
+          pMatches.forEach(pm => {
+            if (!matchesToDisplay.some(m => m.rowIdx === pm.rowIdx)) {
+              matchesToDisplay.push(pm);
+            }
+          });
+        });
+        matchesToDisplay.sort((a, b) => a.rowIdx - b.rowIdx);
+      }
+    }
 
     const empName = (!isAllStaffInitial && resource) ? (getStaffName(resource) || `Ressource ${resource}`) : "Alle Mitarbeiter";
     const dDisp = (allMatches[0] && allMatches[0].dateDisp) ? allMatches[0].dateDisp : (dateIso ? formatDateIsoDe(dateIso) : "Tag");
@@ -5582,7 +5643,7 @@ document.addEventListener("DOMContentLoaded", () => {
         : `Tagesübersicht: ${empName} am ${dDisp}`;
     }
     if (chooseBookingSubtitle) {
-      chooseBookingSubtitle.textContent = `📅 ${dDisp} • ${matchesToDisplay.length} Buchung(en) am gesamten Tag`;
+      chooseBookingSubtitle.textContent = `📅 ${dDisp} • ${matchesToDisplay.length} Buchung(en) am Tag`;
     }
 
     const btnScopeEmployee = document.getElementById("btn-scope-employee");
@@ -5610,7 +5671,10 @@ document.addEventListener("DOMContentLoaded", () => {
           btnScopeEmployee.className = "btn btn-sm btn-secondary";
           if (btnScopeAll) btnScopeAll.className = "btn btn-sm btn-primary";
         }
-        btnScopeEmployee.onclick = () => openDayOverviewModal(resource, dateIso, "employee");
+        btnScopeEmployee.onclick = () => {
+          state.activeDayOverview.scope = "employee";
+          openDayOverviewModal(resource, dateIso, "employee");
+        };
       }
     }
     if (btnScopeAll) {
@@ -5619,27 +5683,155 @@ document.addEventListener("DOMContentLoaded", () => {
       } else {
         btnScopeAll.className = "btn btn-sm btn-secondary";
       }
-      btnScopeAll.onclick = () => openDayOverviewModal(resource, dateIso, "all");
+      btnScopeAll.onclick = () => {
+        state.activeDayOverview.scope = "all";
+        openDayOverviewModal(resource, dateIso, "all");
+      };
     }
 
-    // Gesamtsumme der angezeigten Buchungen berechnen
-    let totalDisplayedHours = 0;
-    matchesToDisplay.forEach(m => {
-      totalDisplayedHours += (typeof m.hours === "number" ? m.hours : parseFloat(m.hours) || 0);
-    });
+    // Partner Dropdown füllen: Alle Mitarbeiter am Tag und Stammdaten
+    if (selectDayPartner) {
+      let partnerOpts = `<option value="">➕ Partner hinzuziehen...</option>`;
+      const dayWorkers = new Map();
+      allMatches.forEach(m => {
+        const rClean = String(m.resource).trim();
+        if (rClean && !dayWorkers.has(rClean)) {
+          dayWorkers.set(rClean, { name: m.employeeName || rClean, hours: m.hours });
+        }
+      });
 
-    if (dayOverviewTotalHoursEl) dayOverviewTotalHoursEl.textContent = formatHoursDe(totalDisplayedHours);
+      // Bereits angezeigte Ressourcen sammeln
+      const activeResSet = new Set();
+      if (resource && resource !== "all") activeResSet.add(String(resource).trim());
+      if (state.additionalDayPartners) {
+        state.additionalDayPartners.forEach(r => activeResSet.add(String(r).trim()));
+      }
+
+      let dayGroupOpts = "";
+      dayWorkers.forEach((info, r) => {
+        if (!activeResSet.has(r)) {
+          dayGroupOpts += `<option value="${escapeHtml(r)}">⭐ ${escapeHtml(info.name)} (${formatHoursDe(info.hours)} h am Tag)</option>`;
+        }
+      });
+      if (dayGroupOpts) {
+        partnerOpts += `<optgroup label="Am ${dDisp} ebenfalls eingeteilt">${dayGroupOpts}</optgroup>`;
+      }
+
+      let otherGroupOpts = "";
+      if (state.staffList && state.staffList.length > 0) {
+        state.staffList.forEach(s => {
+          const sRes = String(s.resource).trim();
+          if (!activeResSet.has(sRes) && !dayWorkers.has(sRes)) {
+            otherGroupOpts += `<option value="${escapeHtml(sRes)}">👤 ${escapeHtml(s.name)} (Nr. ${escapeHtml(sRes)})</option>`;
+          }
+        });
+      }
+      if (otherGroupOpts) {
+        partnerOpts += `<optgroup label="Weitere Mitarbeiter aus Stammdaten">${otherGroupOpts}</optgroup>`;
+      }
+
+      selectDayPartner.innerHTML = partnerOpts;
+      selectDayPartner.value = "";
+
+      selectDayPartner.onchange = () => {
+        const pVal = selectDayPartner.value;
+        if (!pVal) return;
+        state.additionalDayPartners.add(pVal);
+
+        const pRows = findRowsForResourceAndDate(pVal, dateIso);
+        if (pRows.length > 0) {
+          matchesToDisplay.forEach(m => state.coupledRowIndices.add(m.rowIdx));
+          pRows.forEach(pr => state.coupledRowIndices.add(pr.rowIdx));
+
+          const refRowIdx = matchesToDisplay[0]?.rowIdx;
+          let syncVal = null;
+          if (refRowIdx && state.pendingDayChanges[refRowIdx] !== undefined) {
+            syncVal = state.pendingDayChanges[refRowIdx];
+          } else if (refRowIdx) {
+            syncVal = matchesToDisplay[0].hours;
+          }
+          if (syncVal !== null) {
+            pRows.forEach(pr => {
+              state.pendingDayChanges[pr.rowIdx] = syncVal;
+            });
+          }
+        }
+
+        const pName = getStaffName(pVal) || `Ressource ${pVal}`;
+        showToast(`🔗 Partner ${pName} hinzugefügt und gekoppelt! Zeiten werden synchron angepasst.`);
+        openDayOverviewModal(resource, dateIso, currentScope);
+      };
+    }
+
+    // Kopplungs-Statusanzeige aktualisieren
+    function updateCouplingStatusUI() {
+      const cCount = state.coupledRowIndices ? state.coupledRowIndices.size : 0;
+      if (partnerCouplingBadge) {
+        if (cCount >= 2) {
+          partnerCouplingBadge.textContent = `${cCount} gekoppelt`;
+          partnerCouplingBadge.style.display = "inline-flex";
+          partnerCouplingBadge.style.background = "#dcfce7";
+          partnerCouplingBadge.style.color = "#15803d";
+        } else if (cCount === 1) {
+          partnerCouplingBadge.textContent = "1 gewählt";
+          partnerCouplingBadge.style.display = "inline-flex";
+          partnerCouplingBadge.style.background = "#fef3c7";
+          partnerCouplingBadge.style.color = "#b45309";
+        } else {
+          partnerCouplingBadge.style.display = "none";
+        }
+      }
+      if (partnerCouplingStatusText) {
+        if (cCount >= 2) {
+          partnerCouplingStatusText.innerHTML = `<strong>🔗 ${cCount} Zeilen gekoppelt:</strong> Änderungen an einer Arbeitszeit werden in Echtzeit synchron für alle gekoppelten Zeilen übernommen.`;
+        } else if (cCount === 1) {
+          partnerCouplingStatusText.innerHTML = `🔗 <strong>1 Zeile markiert:</strong> Setzen Sie das Häkchen bei einer zweiten Zeile, um beide miteinander zu koppeln.`;
+        } else {
+          partnerCouplingStatusText.textContent = `Wählen Sie per Häkchen die Zeilen aus, die gemeinsam angepasst werden sollen (Zwei-Mann-Team).`;
+        }
+      }
+
+      const pendingCount = Object.keys(state.pendingDayChanges || {}).length;
+      if (btnSaveDayBadge) {
+        btnSaveDayBadge.textContent = pendingCount;
+        btnSaveDayBadge.style.background = pendingCount > 0 ? "#059669" : "#64748b";
+      }
+    }
+
+    // Gesamtsumme der angezeigten Buchungen live berechnen
+    function calcDisplayedTotalHours() {
+      let sum = 0;
+      matchesToDisplay.forEach(m => {
+        let val;
+        if (state.pendingDayChanges && state.pendingDayChanges[m.rowIdx] !== undefined) {
+          val = parseFloat(String(state.pendingDayChanges[m.rowIdx]).replace(",", ".")) || 0;
+        } else {
+          val = (typeof m.hours === "number" ? m.hours : parseFloat(m.hours) || 0);
+        }
+        sum += val;
+      });
+      return sum;
+    }
+
+    function refreshTotalHoursUI() {
+      const sum = calcDisplayedTotalHours();
+      if (dayOverviewTotalHoursEl) dayOverviewTotalHoursEl.textContent = formatHoursDe(sum);
+      const tfootSumEl = document.getElementById("day-overview-tfoot-sum");
+      if (tfootSumEl) tfootSumEl.textContent = `${formatHoursDe(sum)} h`;
+    }
+
+    if (dayOverviewTotalHoursEl) dayOverviewTotalHoursEl.textContent = formatHoursDe(calcDisplayedTotalHours());
     if (dayOverviewCountBadgeEl) dayOverviewCountBadgeEl.textContent = matchesToDisplay.length;
 
     if (thDayEmployee) {
-      thDayEmployee.style.display = (currentScope === "all") ? "" : "";
+      thDayEmployee.style.display = "";
     }
 
     // Tabelle mit allen Zeilen generieren
     if (matchesToDisplay.length === 0) {
       chooseBookingList.innerHTML = `
         <tr>
-          <td colspan="5" style="text-align: center; padding: 2.5rem 1rem; color: var(--text-muted);">
+          <td colspan="6" style="text-align: center; padding: 2.5rem 1rem; color: var(--text-muted);">
             <div style="font-size: 2rem; margin-bottom: 0.5rem;">📭</div>
             <strong style="font-size: 1rem; color: #334155;">Keine Buchungen an diesem Tag gefunden</strong>
             <p style="font-size: 0.85rem; margin-top: 0.35rem; color: #64748b;">Für ${empName} am ${dDisp} liegen derzeit keine Einträge vor.</p>
@@ -5652,31 +5844,54 @@ document.addEventListener("DOMContentLoaded", () => {
       const btnAddEmpty = chooseBookingList.querySelector(".btn-modal-add-entry-empty");
       if (btnAddEmpty) {
         btnAddEmpty.addEventListener("click", () => {
-          closeChooseBookingModal();
+          if (modalChooseBooking) modalChooseBooking.classList.add("hidden");
           openInsertRowModal(null, { res: resource, dateIso: dateIso });
         });
       }
     } else {
       let tbodyHtml = "";
       matchesToDisplay.forEach(m => {
+        const isCoupled = state.coupledRowIndices ? state.coupledRowIndices.has(m.rowIdx) : false;
+        const pendingVal = (state.pendingDayChanges && state.pendingDayChanges[m.rowIdx] !== undefined)
+          ? state.pendingDayChanges[m.rowIdx]
+          : undefined;
+        const curVal = (pendingVal !== undefined) ? pendingVal : m.hours;
+        const isModified = (pendingVal !== undefined && Math.abs(parseFloat(String(pendingVal).replace(",", ".")) - m.hours) > 0.001);
+
         const empLabel = m.employeeName ? `${escapeHtml(m.employeeName)} <span style="color:var(--text-muted); font-size:0.8rem;">(Nr. ${escapeHtml(m.resourcePadded || m.resource)})</span>` : `Ressource ${escapeHtml(m.resourcePadded || m.resource)}`;
+        const valFormatted = (typeof curVal === "number") ? curVal.toFixed(2) : String(curVal);
+
+        let rowClasses = "day-overview-row";
+        if (isCoupled) rowClasses += " day-row-coupled";
+        if (isModified) rowClasses += " day-row-modified";
+
         tbodyHtml += `
-          <tr style="border-bottom: 1px solid #e2e8f0;" class="day-overview-row">
-            <td style="padding: 0.65rem 0.75rem; text-align: center; vertical-align: middle;">
+          <tr style="border-bottom: 1px solid #e2e8f0;" class="${rowClasses}" id="day-row-${m.rowIdx}">
+            <td style="padding: 0.55rem 0.4rem; text-align: center; vertical-align: middle;">
+              <input type="checkbox" class="cb-couple-row" data-row="${m.rowIdx}" ${isCoupled ? "checked" : ""} title="Zeile ${m.rowIdx} mit Partner koppeln (Zeiten synchronisieren)">
+            </td>
+            <td style="padding: 0.55rem 0.6rem; text-align: center; vertical-align: middle;">
               <span class="badge" style="background: #e2e8f0; color: #334155; font-weight: 700; font-size: 0.82rem;">#${m.rowIdx}</span>
             </td>
-            <td style="padding: 0.65rem 0.75rem; vertical-align: middle;">
+            <td style="padding: 0.55rem 0.75rem; vertical-align: middle;">
               <div style="font-weight: 600; color: #0f172a;">${empLabel}</div>
+              <div style="display: flex; gap: 4px; margin-top: 3px;">
+                <span class="badge-coupled ${isCoupled ? "" : "hidden"}" id="badge-coupled-${m.rowIdx}">🔗 Gekoppelt</span>
+                <span class="badge-modified ${isModified ? "" : "hidden"}" id="badge-modified-${m.rowIdx}">✏️ Geändert</span>
+              </div>
             </td>
-            <td style="padding: 0.65rem 0.75rem; text-align: right; vertical-align: middle;">
-              <span class="ts-hour-badge" style="font-size: 0.92rem; padding: 3px 8px;">${m.hoursFormatted} h</span>
+            <td style="padding: 0.55rem 0.6rem; text-align: right; vertical-align: middle;">
+              <div style="display: flex; align-items: center; justify-content: flex-end; gap: 4px;">
+                <input type="number" step="0.25" min="0" max="24" class="form-input day-hours-input" data-row="${m.rowIdx}" data-orig="${m.hours}" value="${valFormatted}" title="Arbeitszeit für Zeile ${m.rowIdx} anpassen" style="width: 82px; padding: 4px 6px; text-align: right; font-weight: 700; font-size: 0.95rem;">
+                <span style="font-weight: 600; color: #475569; font-size: 0.82rem;">h</span>
+              </div>
             </td>
-            <td style="padding: 0.65rem 0.75rem; vertical-align: middle;">
+            <td style="padding: 0.55rem 0.75rem; vertical-align: middle;">
               <div style="font-size: 0.85rem; color: #334155; line-height: 1.45;">
                 ${m.info ? m.info : '<span style="color:var(--text-muted); font-style:italic;">Keine Zusatzdaten</span>'}
               </div>
             </td>
-            <td style="padding: 0.65rem 0.75rem; text-align: center; vertical-align: middle; white-space: nowrap;">
+            <td style="padding: 0.55rem 0.6rem; text-align: center; vertical-align: middle; white-space: nowrap;">
               <div style="display: flex; gap: 0.4rem; justify-content: center;">
                 <button type="button" class="btn btn-outline btn-sm btn-day-open-pdf" data-row="${m.rowIdx}" style="padding: 4px 10px; font-size: 0.82rem; border-color: #818cf8; color: #4338ca; background: #f5f3ff;" title="Original-Beleg (PDF) für diese Zeile anzeigen">
                   📄 Beleg
@@ -5694,6 +5909,99 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       chooseBookingList.innerHTML = tbodyHtml;
 
+      // Event Listener für Checkboxen (Koppeln)
+      chooseBookingList.querySelectorAll(".cb-couple-row").forEach(cb => {
+        cb.addEventListener("change", () => {
+          const rIdx = parseInt(cb.dataset.row, 10);
+          const rowEl = document.getElementById(`day-row-${rIdx}`);
+          const badgeCoupled = document.getElementById(`badge-coupled-${rIdx}`);
+          const inp = chooseBookingList.querySelector(`.day-hours-input[data-row="${rIdx}"]`);
+
+          if (cb.checked) {
+            state.coupledRowIndices.add(rIdx);
+            if (rowEl) rowEl.classList.add("day-row-coupled");
+            if (badgeCoupled) badgeCoupled.classList.remove("hidden");
+
+            // Wenn nun 2 oder mehr Zeilen gekoppelt sind: Wert synchronisieren
+            if (state.coupledRowIndices.size >= 2) {
+              let syncVal = null;
+              for (const cIdx of state.coupledRowIndices) {
+                if (cIdx !== rIdx) {
+                  if (state.pendingDayChanges[cIdx] !== undefined) {
+                    syncVal = state.pendingDayChanges[cIdx];
+                    break;
+                  } else {
+                    const otherInp = chooseBookingList.querySelector(`.day-hours-input[data-row="${cIdx}"]`);
+                    if (otherInp) {
+                      syncVal = otherInp.value;
+                      break;
+                    }
+                  }
+                }
+              }
+              if (syncVal !== null && inp) {
+                inp.value = syncVal;
+                state.pendingDayChanges[rIdx] = syncVal;
+                const orig = parseFloat(inp.dataset.orig) || 0;
+                const isMod = Math.abs(parseFloat(String(syncVal).replace(",", ".")) - orig) > 0.001;
+                const badgeMod = document.getElementById(`badge-modified-${rIdx}`);
+                if (rowEl) rowEl.classList.toggle("day-row-modified", isMod);
+                if (badgeMod) badgeMod.classList.toggle("hidden", !isMod);
+              }
+            }
+          } else {
+            state.coupledRowIndices.delete(rIdx);
+            if (rowEl) rowEl.classList.remove("day-row-coupled");
+            if (badgeCoupled) badgeCoupled.classList.add("hidden");
+          }
+
+          updateCouplingStatusUI();
+          refreshTotalHoursUI();
+        });
+      });
+
+      // Event Listener für Arbeitszeit-Eingabefelder (Live-Synchronisation bei gekoppelten Zeilen)
+      chooseBookingList.querySelectorAll(".day-hours-input").forEach(inp => {
+        const handleHoursInput = () => {
+          const rIdx = parseInt(inp.dataset.row, 10);
+          const valStr = inp.value;
+          state.pendingDayChanges[rIdx] = valStr;
+
+          const orig = parseFloat(inp.dataset.orig) || 0;
+          const numVal = parseFloat(valStr.replace(",", "."));
+          const isMod = (!isNaN(numVal) && Math.abs(numVal - orig) > 0.001);
+
+          const rowEl = document.getElementById(`day-row-${rIdx}`);
+          const badgeMod = document.getElementById(`badge-modified-${rIdx}`);
+          if (rowEl) rowEl.classList.toggle("day-row-modified", isMod);
+          if (badgeMod) badgeMod.classList.toggle("hidden", !isMod);
+
+          // Falls gekoppelt: Alle anderen gekoppelten Zeilen sofort synchron aktualisieren!
+          if (state.coupledRowIndices && state.coupledRowIndices.has(rIdx)) {
+            state.coupledRowIndices.forEach(cIdx => {
+              if (cIdx !== rIdx) {
+                state.pendingDayChanges[cIdx] = valStr;
+                const otherInp = chooseBookingList.querySelector(`.day-hours-input[data-row="${cIdx}"]`);
+                if (otherInp) otherInp.value = valStr;
+
+                const otherRow = document.getElementById(`day-row-${cIdx}`);
+                const otherBadgeMod = document.getElementById(`badge-modified-${cIdx}`);
+                const otherOrig = otherInp ? (parseFloat(otherInp.dataset.orig) || 0) : 0;
+                const otherIsMod = (!isNaN(numVal) && Math.abs(numVal - otherOrig) > 0.001);
+                if (otherRow) otherRow.classList.toggle("day-row-modified", otherIsMod);
+                if (otherBadgeMod) otherBadgeMod.classList.toggle("hidden", !otherIsMod);
+              }
+            });
+          }
+
+          refreshTotalHoursUI();
+          updateCouplingStatusUI();
+        };
+
+        inp.addEventListener("input", handleHoursInput);
+        inp.addEventListener("change", handleHoursInput);
+      });
+
       // Event Listener für Beleg anzeigen
       chooseBookingList.querySelectorAll(".btn-day-open-pdf").forEach(btn => {
         btn.addEventListener("click", () => {
@@ -5708,7 +6016,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.addEventListener("click", () => {
           const rIdx = parseInt(btn.dataset.row, 10);
           state.modalCaller = "day-overview";
-          closeChooseBookingModal();
+          if (modalChooseBooking) modalChooseBooking.classList.add("hidden");
           openEditRowModal(rIdx);
         });
       });
@@ -5718,6 +6026,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.addEventListener("click", () => {
           const rIdx = parseInt(btn.dataset.row, 10);
           state.modalCaller = "day-overview";
+          if (modalChooseBooking) modalChooseBooking.classList.add("hidden");
           openDeleteEntryModal(rIdx);
         });
       });
@@ -5728,14 +6037,14 @@ document.addEventListener("DOMContentLoaded", () => {
     if (chooseBookingTfoot) {
       chooseBookingTfoot.innerHTML = `
         <tr>
-          <td colspan="2" style="padding: 0.65rem 0.75rem; text-align: right;">
+          <td colspan="3" style="padding: 0.65rem 0.75rem; text-align: right;">
             <strong>Gesamtsumme Tag:</strong>
           </td>
-          <td style="padding: 0.65rem 0.75rem; text-align: right;">
-            <strong style="color: #0369a1; font-size: 0.95rem;">${formatHoursDe(totalDisplayedHours)} h</strong>
+          <td style="padding: 0.65rem 0.6rem; text-align: right;">
+            <strong id="day-overview-tfoot-sum" style="color: #0369a1; font-size: 0.95rem;">${formatHoursDe(calcDisplayedTotalHours())} h</strong>
           </td>
           <td colspan="2" style="padding: 0.65rem 0.75rem; color: var(--text-muted); font-size: 0.82rem;">
-            ${matchesToDisplay.length} Buchung(en) insgesamt
+            ${matchesToDisplay.length} Buchung(en) in der Ansicht
           </td>
         </tr>
       `;
@@ -5745,7 +6054,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (btnChooseAddNew) {
       btnChooseAddNew.onclick = () => {
         state.modalCaller = "day-overview";
-        closeChooseBookingModal();
+        if (modalChooseBooking) modalChooseBooking.classList.add("hidden");
         openInsertRowModal(null, { res: (resource !== "all" ? resource : null), dateIso: dateIso });
       };
     }
@@ -5754,12 +6063,63 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnDrilldown = document.getElementById("btn-choose-drilldown-full");
     if (btnDrilldown) {
       btnDrilldown.onclick = () => {
-        closeChooseBookingModal();
+        closeChooseBookingModal(true);
         drillDownToFullTable((currentScope === "employee" ? resource : null), dateIso);
       };
     }
 
+    // Button: Änderungen en bloc übernehmen
+    if (btnSaveAllDayChanges) {
+      btnSaveAllDayChanges.onclick = executeSaveAllDayChanges;
+    }
+
+    updateCouplingStatusUI();
     modalChooseBooking.classList.remove("hidden");
+  }
+
+  // Übernimmt alle geänderten Arbeitszeiten der Tagesübersicht en bloc in die Excel-Datei
+  function executeSaveAllDayChanges() {
+    const pendingKeys = Object.keys(state.pendingDayChanges || {});
+    if (pendingKeys.length === 0) {
+      showToast("Keine Änderungen zum Speichern vorhanden.");
+      closeChooseBookingModal(true);
+      return;
+    }
+
+    const hoursColIdx = getHoursColIdx();
+    let savedCount = 0;
+
+    pendingKeys.forEach(rStr => {
+      const rIdx = parseInt(rStr, 10);
+      const rawVal = state.pendingDayChanges[rIdx];
+      if (rawVal !== undefined && rawVal !== null && rawVal !== "") {
+        const clean = String(rawVal).replace(",", ".");
+        const num = parseFloat(clean);
+        if (!isNaN(num) && num >= 0) {
+          saveCellCorrection(rIdx, hoursColIdx, num);
+          savedCount++;
+        }
+      }
+    });
+
+    state.pendingDayChanges = {};
+    if (state.coupledRowIndices) state.coupledRowIndices.clear();
+    if (state.additionalDayPartners) state.additionalDayPartners.clear();
+
+    closeChooseBookingModal(true);
+
+    // UI & Tabellen synchronisieren
+    runInspection({ skipScroll: true, skipToast: true });
+    if (state.timesheetData) renderTimesheetMatrix();
+    renderFullExcelTable();
+    renderResultsTable();
+
+    showToast(`💾 ${savedCount} Arbeitszeit(en) erfolgreich en bloc übernommen und in Prüfdatei gespeichert!`);
+
+    setTimeout(() => {
+      const tsSec = document.getElementById("timesheet-section");
+      if (tsSec) tsSec.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
   }
 
   // Rückwärtskompatibilität
@@ -6348,6 +6708,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
       closeInsertRowModal();
 
+      // Falls Zeile gekoppelt war: Arbeitszeit auch auf Partner-Zeilen übertragen
+      if (state.coupledRowIndices && state.coupledRowIndices.has(rowIdx) && hoursColIdx) {
+        const newH = state.appliedCorrections[`${rowIdx}_${hoursColIdx}`];
+        if (newH !== undefined) {
+          state.coupledRowIndices.forEach(cIdx => {
+            if (cIdx !== rowIdx) {
+              saveCellCorrection(cIdx, hoursColIdx, newH);
+            }
+          });
+        }
+      }
+
       // Mitarbeiter für sanftes Hervorheben in der Wochentabelle merken
       if (savedRes) state.highlightEmployeeRes = savedRes;
 
@@ -6596,11 +6968,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Event Listeners für Buchung-Auswählen Modal
-  if (btnCloseChooseModal) btnCloseChooseModal.addEventListener("click", closeChooseBookingModal);
-  if (btnCloseChoose) btnCloseChoose.addEventListener("click", closeChooseBookingModal);
+  if (btnCloseChooseModal) btnCloseChooseModal.addEventListener("click", () => closeChooseBookingModal(false));
+  if (btnCloseChoose) btnCloseChoose.addEventListener("click", () => closeChooseBookingModal(false));
   if (modalChooseBooking) {
     modalChooseBooking.addEventListener("click", (e) => {
-      if (e.target === modalChooseBooking) closeChooseBookingModal();
+      if (e.target === modalChooseBooking) closeChooseBookingModal(false);
     });
   }
 

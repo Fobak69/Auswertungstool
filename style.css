@@ -1579,8 +1579,102 @@ body {
   text-decoration: underline;
 }
 
+.day-overview-row {
+  transition: background-color 0.15s ease, border-left-color 0.15s ease;
+}
+
 .day-overview-row:hover {
   background-color: #f8fafc !important;
+}
+
+/* Gekoppelte Zeilen (Zwei-Mann-Team) */
+.day-overview-row.day-row-coupled {
+  background-color: #f0fdf4 !important;
+  border-left: 4px solid #16a34a !important;
+}
+
+.day-overview-row.day-row-coupled:hover {
+  background-color: #dcfce7 !important;
+}
+
+/* Modifizierte Zeilen vor dem En-Bloc-Speichern */
+.day-overview-row.day-row-modified {
+  background-color: #fefce8 !important;
+  border-left: 4px solid #eab308 !important;
+}
+
+.day-overview-row.day-row-coupled.day-row-modified {
+  background-color: #ecfdf5 !important;
+  border-left: 4px solid #059669 !important;
+}
+
+.cb-couple-row {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #16a34a;
+  vertical-align: middle;
+}
+
+.day-hours-input {
+  transition: all 0.15s ease;
+  font-family: inherit;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background-color: #ffffff;
+}
+
+.day-hours-input:focus {
+  outline: none;
+  border-color: #16a34a !important;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.2) !important;
+  background-color: #ffffff !important;
+}
+
+.day-row-coupled .day-hours-input {
+  border-color: #86efac;
+  background-color: #f0fdf4;
+}
+
+.day-row-modified .day-hours-input {
+  border-color: #f59e0b;
+  background-color: #fffbeb;
+  font-weight: 800;
+}
+
+.badge-coupled {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.badge-modified {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fcd34d;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+#btn-save-all-day-changes {
+  transition: all 0.2s ease;
+}
+
+#btn-save-all-day-changes:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 12px -2px rgba(16, 185, 129, 0.35);
 }
 
 .ts-emp-clickable {
