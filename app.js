@@ -6817,12 +6817,17 @@ document.addEventListener("DOMContentLoaded", () => {
       closeInsertRowModal();
 
       // Falls Zeile gekoppelt war: Arbeitszeit auch auf Partner-Zeilen übertragen
+      let coupledPartnerCount = 0;
       if (state.coupledRowIndices && state.coupledRowIndices.has(rowIdx) && hoursColIdx) {
         const newH = state.appliedCorrections[`${rowIdx}_${hoursColIdx}`];
         if (newH !== undefined) {
+          if (!state.pendingDayChanges) state.pendingDayChanges = {};
+          state.pendingDayChanges[rowIdx] = newH;
           state.coupledRowIndices.forEach(cIdx => {
             if (cIdx !== rowIdx) {
               saveCellCorrection(cIdx, hoursColIdx, newH);
+              state.pendingDayChanges[cIdx] = newH;
+              coupledPartnerCount++;
             }
           });
         }
@@ -6834,7 +6839,11 @@ document.addEventListener("DOMContentLoaded", () => {
       // UI & Analyse aktualisieren (OHNE Scrollen nach oben und ohne Toast-Überschreibung!)
       runInspection({ skipScroll: true, skipToast: true });
 
-      showToast(`✅ Änderungen für Zeile ${rowIdx} erfolgreich in Prüfdatei gespeichert!`);
+      if (coupledPartnerCount > 0) {
+        showToast(`✅ Änderungen für Zeile ${rowIdx} und ${coupledPartnerCount} gekoppelte(n) Partner erfolgreich in Prüfdatei gespeichert!`);
+      } else {
+        showToast(`✅ Änderungen für Zeile ${rowIdx} erfolgreich in Prüfdatei gespeichert!`);
+      }
 
       // Wenn Tagesübersicht aktiv war: aktualisieren und wieder anzeigen
       if (state.activeDayOverview) {
