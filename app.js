@@ -1,7 +1,7 @@
 // ==============================================================================
 // Excel-Prüfer Web Controller (100% Client-Side für Netlify & Browser)
 // ==============================================================================
-console.log("[APP.JS] *** VERSION 4.9 GELADEN (Große Tagesübersicht & Kompaktlayout) - 2026-10-15 ***");
+console.log("[APP.JS] *** VERSION 4.10 GELADEN (Automatische Partner-Stundenanpassung & Kopplung) - 2026-10-15 ***");
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -5542,19 +5542,27 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       // 3. Stunden
+      let rOrigHours = 0;
       let rHours = 0;
       if (hoursColIdx) {
         const cellKeyHours = `${r}_${hoursColIdx}`;
+        let baseVal;
+        if (state.appliedCorrections && state.appliedCorrections[cellKeyHours] !== undefined) {
+          baseVal = state.appliedCorrections[cellKeyHours];
+        } else {
+          baseVal = row.getCell(hoursColIdx).value;
+        }
+        rOrigHours = parseHours(baseVal);
+
         let hVal;
         if (state.pendingDayChanges && state.pendingDayChanges[r] !== undefined) {
           hVal = state.pendingDayChanges[r];
-        } else if (state.appliedCorrections && state.appliedCorrections[cellKeyHours] !== undefined) {
-          hVal = state.appliedCorrections[cellKeyHours];
         } else {
-          hVal = row.getCell(hoursColIdx).value;
+          hVal = baseVal;
         }
         rHours = parseHours(hVal);
       } else {
+        rOrigHours = 1;
         rHours = 1;
       }
 
@@ -5585,6 +5593,8 @@ document.addEventListener("DOMContentLoaded", () => {
         employeeName: displayEmpName,
         dateIso: rDateIso,
         dateDisp: rDateDisp || dateIso,
+        origHours: rOrigHours,
+        origHoursFormatted: formatHoursDe(rOrigHours),
         hours: rHours,
         hoursFormatted: formatHoursDe(rHours),
         info: infoParts.join(" ")
@@ -5736,29 +5746,126 @@ document.addEventListener("DOMContentLoaded", () => {
       selectDayPartner.onchange = () => {
         const pVal = selectDayPartner.value;
         if (!pVal) return;
+
+        // 1. Alle aktuell getippten Stundenwerte aus den Input-Feldern in state.pendingDayChanges übernehmen (auch unblurred)
+        chooseBookingList.querySelectorAll(".day-hours-input").forEach(inp => {
+          const r = parseInt(inp.dataset.row, 10);
+          if (!isNaN(r) && inp.value !== "") {
+            state.pendingDayChanges[r] = inp.value;
+          }
+        });
+
         state.additionalDayPartners.add(pVal);
 
         const pRows = findRowsForResourceAndDate(pVal, dateIso);
-        if (pRows.length > 0) {
-          matchesToDisplay.forEach(m => state.coupledRowIndices.add(m.rowIdx));
-          pRows.forEach(pr => state.coupledRowIndices.add(pr.rowIdx));
+        const pName = getStaffName(pVal) || `Ressource ${pVal}`;
 
-          const refRowIdx = matchesToDisplay[0]?.rowIdx;
-          let syncVal = null;
-          if (refRowIdx && state.pendingDayChanges[refRowIdx] !== undefined) {
-            syncVal = state.pendingDayChanges[refRowIdx];
-          } else if (refRowIdx) {
-            syncVal = matchesToDisplay[0].hours;
-          }
-          if (syncVal !== null) {
-            pRows.forEach(pr => {
-              state.pendingDayChanges[pr.rowIdx] = syncVal;
-            });
-          }
+        if (pRows.length === 0) {
+          showToast(`ℹ️ Partner ${pName} hat am ${dDisp} keine Buchungen.`);
+          openDayOverviewModal(resource, dateIso, currentScope);
+          return;
         }
 
-        const pName = getStaffName(pVal) || `Ressource ${pVal}`;
-        showToast(`🔗 Partner ${pName} hinzugefügt und gekoppelt! Zeiten werden synchron angepasst.`);
+        // 2. Intelligent koppeln und Arbeitszeiten übertragen
+        // Der Nutzer wünscht:
+        // "wenn ich jetzt einen Partner hinzuziehe der die Gleiche Stundenzahl hat möchte ich das er auch gleich automatisch die entsprechende Stunde geändert bekommt."
+        let autoChangedCount = 0;
+        let lastAutoVal = null;
+        let matchedHourVal = null;
+        const usedMatches = new Set();
+
+        pRows.forEach(pr => {
+          const prOrig = (typeof pr.origHours === "number") ? pr.origHours : pr.hours;
+          let bestMatch = null;
+
+          // Priorität 1: Bereits angezeigter Mitarbeiter-Eintrag mit EXAKT gleicher ursprünglicher Stundenzahl, der bereits geändert wurde
+          for (const m of matchesToDisplay) {
+            if (usedMatches.has(m.rowIdx)) continue;
+            const mOrig = (typeof m.origHours === "number") ? m.origHours : m.hours;
+            const mPending = state.pendingDayChanges[m.rowIdx];
+            const isChanged = (mPending !== undefined && Math.abs(parseFloat(String(mPending).replace(",", ".")) - mOrig) > 0.001);
+            if (isChanged && Math.abs(mOrig - prOrig) < 0.001) {
+              bestMatch = m;
+              break;
+            }
+          }
+
+          // Priorität 2: Bereits angezeigter Eintrag mit gleicher ursprünglicher Stundenzahl (noch nicht geändert oder geändert)
+          if (!bestMatch) {
+            for (const m of matchesToDisplay) {
+              if (usedMatches.has(m.rowIdx)) continue;
+              const mOrig = (typeof m.origHours === "number") ? m.origHours : m.hours;
+              if (Math.abs(mOrig - prOrig) < 0.001) {
+                bestMatch = m;
+                break;
+              }
+            }
+          }
+
+          // Priorität 3: Wenn genau 1 Buchung angezeigt wird und der Partner genau 1 Buchung hat (klassisches 2er-Team am Tag)
+          if (!bestMatch && matchesToDisplay.length === 1 && pRows.length === 1) {
+            bestMatch = matchesToDisplay[0];
+          }
+
+          // Priorität 4: Irgendeine bereits geänderte Zeile in matchesToDisplay
+          if (!bestMatch) {
+            for (const m of matchesToDisplay) {
+              if (usedMatches.has(m.rowIdx)) continue;
+              const mOrig = (typeof m.origHours === "number") ? m.origHours : m.hours;
+              const mPending = state.pendingDayChanges[m.rowIdx];
+              if (mPending !== undefined && Math.abs(parseFloat(String(mPending).replace(",", ".")) - mOrig) > 0.001) {
+                bestMatch = m;
+                break;
+              }
+            }
+          }
+
+          // Fallback: Erste freie Zeile aus matchesToDisplay
+          if (!bestMatch) {
+            bestMatch = matchesToDisplay.find(m => !usedMatches.has(m.rowIdx)) || matchesToDisplay[0];
+          }
+
+          if (bestMatch) {
+            usedMatches.add(bestMatch.rowIdx);
+
+            // Beide Zeilen miteinander koppeln
+            state.coupledRowIndices.add(bestMatch.rowIdx);
+            state.coupledRowIndices.add(pr.rowIdx);
+
+            // Stundenwert übertragen falls geändert
+            const bestPending = state.pendingDayChanges[bestMatch.rowIdx];
+            if (bestPending !== undefined) {
+              state.pendingDayChanges[pr.rowIdx] = bestPending;
+              lastAutoVal = bestPending;
+              matchedHourVal = prOrig;
+              autoChangedCount++;
+            } else if (state.pendingDayChanges[pr.rowIdx] !== undefined) {
+              state.pendingDayChanges[bestMatch.rowIdx] = state.pendingDayChanges[pr.rowIdx];
+              lastAutoVal = state.pendingDayChanges[pr.rowIdx];
+              matchedHourVal = prOrig;
+              autoChangedCount++;
+            }
+          } else {
+            state.coupledRowIndices.add(pr.rowIdx);
+          }
+        });
+
+        // Alle restlichen Zeilen in matchesToDisplay und pRows koppeln, falls noch nicht gekoppelt
+        if (state.coupledRowIndices.size < 2 && matchesToDisplay.length > 0) {
+          matchesToDisplay.forEach(m => state.coupledRowIndices.add(m.rowIdx));
+          pRows.forEach(pr => state.coupledRowIndices.add(pr.rowIdx));
+        }
+
+        // Benutzerfreundlicher Toast mit genauer Rückmeldung
+        if (autoChangedCount > 0 && lastAutoVal !== null) {
+          const numVal = parseFloat(String(lastAutoVal).replace(",", "."));
+          const dispVal = !isNaN(numVal) ? formatHoursDe(numVal) : lastAutoVal;
+          const origDisp = (matchedHourVal !== null) ? `${formatHoursDe(matchedHourVal)} h ➔ ` : "";
+          showToast(`🔗 Partner ${pName} hinzugefügt: Arbeitszeit (${origDisp}${dispVal} h) automatisch übernommen & gekoppelt!`);
+        } else {
+          showToast(`🔗 Partner ${pName} hinzugefügt und gekoppelt! Zeiten werden synchron angepasst.`);
+        }
+
         openDayOverviewModal(resource, dateIso, currentScope);
       };
     }
@@ -5856,7 +5963,8 @@ document.addEventListener("DOMContentLoaded", () => {
           ? state.pendingDayChanges[m.rowIdx]
           : undefined;
         const curVal = (pendingVal !== undefined) ? pendingVal : m.hours;
-        const isModified = (pendingVal !== undefined && Math.abs(parseFloat(String(pendingVal).replace(",", ".")) - m.hours) > 0.001);
+        const baselineHours = (typeof m.origHours === "number") ? m.origHours : m.hours;
+        const isModified = (pendingVal !== undefined && Math.abs(parseFloat(String(pendingVal).replace(",", ".")) - baselineHours) > 0.001);
 
         const empLabel = m.employeeName ? `${escapeHtml(m.employeeName)} <span style="color:var(--text-muted); font-size:0.8rem;">(Nr. ${escapeHtml(m.resourcePadded || m.resource)})</span>` : `Ressource ${escapeHtml(m.resourcePadded || m.resource)}`;
         const valFormatted = (typeof curVal === "number") ? curVal.toFixed(2) : String(curVal);
@@ -5882,7 +5990,7 @@ document.addEventListener("DOMContentLoaded", () => {
             </td>
             <td style="padding: 0.35rem 0.45rem; text-align: right; vertical-align: middle;">
               <div style="display: flex; align-items: center; justify-content: flex-end; gap: 3px;">
-                <input type="number" step="0.25" min="0" max="24" class="form-input day-hours-input" data-row="${m.rowIdx}" data-orig="${m.hours}" value="${valFormatted}" title="Arbeitszeit für Zeile ${m.rowIdx} anpassen" style="width: 74px; padding: 2px 5px; text-align: right; font-weight: 700; font-size: 0.9rem; height: 28px;">
+                <input type="number" step="0.25" min="0" max="24" class="form-input day-hours-input" data-row="${m.rowIdx}" data-orig="${baselineHours}" value="${valFormatted}" title="Arbeitszeit für Zeile ${m.rowIdx} anpassen" style="width: 74px; padding: 2px 5px; text-align: right; font-weight: 700; font-size: 0.9rem; height: 28px;">
                 <span style="font-weight: 600; color: #475569; font-size: 0.8rem;">h</span>
               </div>
             </td>
